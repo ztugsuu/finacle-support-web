@@ -1,0 +1,6 @@
+﻿.kube
+.venv
+.git
+__pycache__
+*.pyc
+tests
