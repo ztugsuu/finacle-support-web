@@ -1,0 +1,53 @@
+# The web runs in pre-uat-finacle; grant its ServiceAccount access to UAT.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: finacle-support-pre-uat-access
+  namespace: uat-finacle
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list]
+  # Explicit names: extend this list when a new Finbranch ConfigMap is added.
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames:
+      - fnhttp-ac-env
+      - fnhttp-la-env
+      - fnhttp-py-env
+      - fnhttp-rof-env
+      - fip-env
+      - finbranch-fip-ac-env
+      - finbranch-fip-la-env
+      - finbranch-fip-py-env
+      - finbranch-fip-rof-env
+    verbs: [patch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: finacle-support-pre-uat-access
+  namespace: uat-finacle
+subjects:
+  - kind: ServiceAccount
+    name: finacle-support-sa
+    namespace: pre-uat-finacle
+roleRef:
+  kind: Role
+  name: finacle-support-pre-uat-access
+  apiGroup: rbac.authorization.k8s.io

@@ -14,11 +14,16 @@ spec:
         app: finacle-support-web
     spec:
       serviceAccountName: finacle-support-sa
+      # Allow an in-flight multi-ConfigMap operation to finish during web updates.
+      terminationGracePeriodSeconds: 1830
       imagePullSecrets:
         - name: securereg
       containers:
         - name: finacle-support-web
-          image: securereg.m-bank.mn:5000/finacle-support-web:1.0
+          image: securereg.m-bank.mn:5000/finacle-support-web:1.4
+          env:
+            - name: NAMESPACE
+              value: pre-uat-finacle
           ports:
             - containerPort: 5000
               name: http
@@ -41,8 +46,8 @@ spec:
             runAsNonRoot: true
           resources:
             limits:
-              cpu: "1"
-              memory: "512Mi"
+              cpu: "4"
+              memory: "6Gi"
             requests:
               cpu: "100m"
               memory: "128Mi"

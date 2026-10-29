@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="mn">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -8,13 +8,13 @@
 <script defer src="{{ url_for('static', filename='app.js') }}"></script>
 </head>
 <body>
-<aside class="sidebar"><a class="brand" href="/" aria-label="Finacle нүүр"><span class="logo">F</span> Finacle<span class="brand-sub">SUPPORT WORKSPACE</span></a><div class="nav-label">WORKSPACE</div><a class="nav active" href="#overview">◈ &nbsp; Ерөнхий хяналт</a><a class="nav" href="#log-section">≡ &nbsp; Log хяналт</a><a class="nav" href="#deploy-section">▤ &nbsp; Deployments</a><div class="sidebar-bottom"><span class="env-dot"></span> PRE-UAT ENVIRONMENT<p>Finacle Support Web</p></div></aside>
+<aside class="sidebar"><a class="brand" href="#/overview" aria-label="Finacle нүүр"><span class="logo">F</span> Finacle<span class="brand-sub">SUPPORT WORKSPACE</span></a><div class="nav-label">WORKSPACE</div><nav aria-label="Үндсэн цэс"><a class="nav active" data-page="overview" href="#/overview">◈ &nbsp; Ерөнхий хяналт</a><a class="nav" data-page="logs" href="#/logs">≡ &nbsp; Log хяналт</a><a class="nav" data-page="control" href="#/control">⚙ &nbsp; Log control</a><a class="nav" data-page="deployments" href="#/deployments">▤ &nbsp; Deployments</a></nav><div class="sidebar-bottom"><span class="env-dot"></span> {{ namespace }}<p>Finacle Support Web</p></div></aside>
 <main>
-<header><div class="breadcrumb">Системийн хяналт <span>/</span> Finacle</div><span class="namespace">{{ namespace }}</span></header>
-<section id="overview" class="title-row"><div><div class="eyebrow">FINACLE SERVICE MONITOR</div><h1>Системийн ерөнхий хяналт</h1><p>Үйлчилгээний төлөв болон application log-ийг нэг дороос.</p></div><button id="refresh" class="button secondary">↻ &nbsp; Төлөв шинэчлэх</button></section>
+<header><div class="breadcrumb">Finacle <span>/</span> <span id="page-breadcrumb">Ерөнхий хяналт</span></div><label class="project-picker">Project<select id="project-select">{% for project in namespaces %}<option value="{{ project }}"{% if project == namespace %} selected{% endif %}>{{ project }}</option>{% endfor %}</select></label></header>
+<section class="title-row"><div><div class="eyebrow">FINACLE SERVICE MONITOR</div><h1 id="page-title" tabindex="-1">Системийн ерөнхий хяналт</h1><p id="page-description">Үйлчилгээ болон pod-уудын төлөв.</p></div><button id="refresh" class="button secondary">↻ &nbsp; Төлөв шинэчлэх</button></section>
 <div id="overview-error" class="notice error" role="alert" hidden></div>
-<div class="stats"><article class="stat"><span>Нийт pod</span><strong id="total">—</strong><small>Namespace доторх pod-ууд</small></article><article class="stat"><span>Бэлэн pod</span><strong id="healthy" class="green">—</strong><small>Бүх container ажиллаж байна</small></article><article class="stat"><span>Анхаарах pod</span><strong id="attention" class="amber">—</strong><small>Бэлэн бус / зогссон</small></article><article class="stat"><span>Log эх үүсвэр</span><strong>2 <em>/ 5 файл</em></strong><small>FIP · FNBRNMPY</small></article></div>
-<section id="log-section" class="panel"><div class="panel-heading"><div><h2>Application logs</h2><p>Файлын сүүлийн мөрүүд · <span id="log-updated">Уншаагүй</span></p></div><label class="live-control"><input type="checkbox" id="live" checked> 5 сек тутам шинэчлэх</label></div>
+<div class="stats" data-screen="overview"><article class="stat"><span>Нийт pod</span><strong id="total">—</strong><small>Namespace доторх pod-ууд</small></article><article class="stat"><span>Бэлэн pod</span><strong id="healthy" class="green">—</strong><small>Бүх container ажиллаж байна</small></article><article class="stat"><span>Анхаарах pod</span><strong id="attention" class="amber">—</strong><small>Бэлэн бус / зогссон</small></article><article class="stat"><span>Log эх үүсвэр</span><strong>2 <em>/ 5 файл</em></strong><small>FIP · FNBRNMPY</small></article></div>
+<section id="log-section" class="panel" data-screen="logs" hidden><div class="panel-heading"><div><h2>Application logs</h2><p>Файлын сүүлийн мөрүүд · <span id="log-updated">Уншаагүй</span></p></div><label class="live-control"><input type="checkbox" id="live" checked> 5 сек тутам шинэчлэх</label></div>
 <div class="source-tabs" role="group" aria-label="Log эх үүсвэр"><button class="source-tab selected" data-source="fip" aria-pressed="true">FIP <span>3 log файл</span></button><button class="source-tab" data-source="fnbrnmpy" aria-pressed="false">FNBRNMPY <span>2 log файл</span></button></div>
 <div class="filters"><label>Pod<select id="pod"><option value="">Pod хайж байна…</option></select></label><label>Container<select id="container"></select></label><label>Log файл<select id="file"></select></label><label>Мөрийн тоо<select id="lines"><option>200</option><option selected>500</option><option>1000</option><option>2000</option></select></label></div>
 <div class="log-toolbar"><input id="search" type="search" placeholder="Харагдаж буй мөрүүдээс хайх…" aria-label="Log мөрөөс хайх"><span id="line-count">0 мөр</span><button id="read" class="button secondary">↻ Унших</button><button id="download" class="button secondary">↓ Татах</button></div>
@@ -22,8 +22,37 @@
 <div id="log-error" class="notice error" role="alert" hidden></div><div id="truncated" class="notice" hidden>Том файл тул сүүлийн 256 KiB доторх мөрүүдийг харуулж байна.</div>
 <pre id="log-output" tabindex="0" aria-label="Log агуулга">Cluster-ээс pod мэдээлэл авч байна…</pre>
 <div class="log-footer"><span>Файлыг зөвхөн уншина · Сүүлийн мөрүүдийг шинэчилнэ</span><label><input type="checkbox" id="autoscroll" checked> Доод мөр рүү шилжих</label></div></section>
-<section class="panel"><div class="panel-heading"><div><h2>Pod төлөв</h2><p id="overview-updated">Мэдээлэл авч байна…</p></div><span class="tag">{{ namespace }}</span></div><div class="table-wrap"><table><thead><tr><th>Pod нэр</th><th>Төлөв</th><th>Бэлэн container</th><th>Restart</th><th>Log</th></tr></thead><tbody id="pod-table"><tr><td colspan="5">Уншиж байна…</td></tr></tbody></table></div></section>
-<section id="deploy-section" class="panel"><div class="panel-heading"><div><h2>Deployments</h2><p>Restart хийхэд баталгаажуулах цонх нээгдэнэ.</p></div></div><div id="deploy-warning" class="notice error" hidden></div><div id="action-message" class="notice" role="status" hidden></div><div class="table-wrap"><table><thead><tr><th>Deployment</th><th>Бэлэн replica</th><th>Үйлдэл</th></tr></thead><tbody id="deploy-table"><tr><td colspan="3">Уншиж байна…</td></tr></tbody></table></div></section>
-<footer>Finacle Support <span>PRE-UAT · Үйл ажиллагааны хяналт</span></footer>
+<section class="panel" data-screen="overview"><div class="panel-heading"><div><h2>Pod төлөв</h2><p id="overview-updated">Мэдээлэл авч байна…</p></div><span class="tag">{{ namespace }}</span></div><div class="table-wrap"><table><thead><tr><th>Pod нэр</th><th>Төлөв</th><th>Бэлэн container</th><th>Restart</th><th>Log</th></tr></thead><tbody id="pod-table"><tr><td colspan="5">Уншиж байна…</td></tr></tbody></table></div></section>
+<section id="deploy-section" class="panel" data-screen="deployments" hidden><div class="panel-heading"><div><h2>Deployments</h2><p>5 секунд тутам шинэчилнэ. Бүх pod/container бэлэн, rollout дууссан, 5 минут тогтвортой үед Restart идэвхжинэ.</p></div></div><div id="deploy-warning" class="notice error" hidden></div><div id="action-message" class="notice" role="status" hidden></div><div class="table-wrap"><table><thead><tr><th>Deployment</th><th>Бэлэн replica</th><th>Үйлдэл</th></tr></thead><tbody id="deploy-table"><tr><td colspan="3">Уншиж байна…</td></tr></tbody></table></div></section>
+<section id="log-control-section" class="panel" data-screen="control" hidden>
+  <div class="panel-heading"><div><h2>Log control</h2><p>FNHTTP · FIP · Finbranch — Log түвшин өөрчлөх</p></div><button id="control-refresh" class="button secondary">↻ ConfigMap унших</button></div>
+  <div class="notice">{{ namespace }} · Өөрчлөлтийг баталгаажуулахад сонгосон ConfigMap шинэчлэгдэж, түүнийг ашигладаг Deployment-ууд restart хийнэ.</div>
+  <form id="control-form">
+    <fieldset id="control-fields" class="control-fields">
+      <div class="filters control-filters">
+        <label>ConfigMap<select id="control-config" required><option value="">ConfigMap унших товчийг дарна уу</option></select></label>
+        <label>Log type<select id="control-mode"><option>DEBUG</option><option>TRACE</option><option>NORMAL</option></select></label>
+        <label>USER<input id="control-user" value="ALL" maxlength="128" pattern="[A-Za-z0-9_.@\-]{1,128}" autocomplete="off" spellcheck="false"><span id="control-user-help">ALL эсвэл нэг USERNAME</span></label>
+      </div>
+      <div class="control-actions"><button id="control-preview" class="button secondary" type="submit" disabled>Dry-run шалгах + Урьдчилан харах</button></div>
+    </fieldset>
+  </form>
+  <div class="panel-heading"><div><h2>Одоогийн утгууд</h2><p id="control-current-status">ConfigMap сонгоно уу.</p></div></div>
+  <div class="table-wrap"><table><thead><tr><th>Тохиргоо</th><th>Одоогийн утга</th></tr></thead><tbody id="control-current"></tbody></table></div>
+  <div class="control-actions"><button id="control-reset-all" class="button restart" type="button">Бүх logging ConfigMap → NORMAL</button></div>
+  <div class="notice">Энэ товч зөвхөн сонгосон project-ийн FNHTTP, FIP, Finbranch logging ConfigMap-уудыг default утгад буцаана. Эхлээд dry-run ба өөрчлөлтийн жагсаалтыг харуулна.</div>
+  <div id="control-message" class="notice" role="status" hidden></div>
+  <div id="control-preview-panel" hidden>
+    <div class="notice success">Dry-run амжилттай: тохиргоог сервер хүлээн авах боломжтой. Pod асааж шалгаагүй; бодит бэлэн байдлыг restart-ийн дараа хянана.</div>
+    <div class="panel-heading"><div><h2 id="control-plan-title">Өөрчлөлт</h2><p id="control-deployments"></p></div></div>
+    <div class="table-wrap"><table><thead><tr><th>ConfigMap</th><th>Тохиргоо</th><th>Одоогийн утга</th><th>Шинэ утга</th></tr></thead><tbody id="control-changes"></tbody></table></div>
+    <div class="control-actions"><button id="control-apply" class="button restart" type="button">Баталгаажуулж өөрчлөх + Restart</button><button id="control-cancel" class="button secondary" type="button">Цуцлах</button></div>
+  </div>
+  <div id="control-rollout" hidden>
+    <div class="panel-heading"><div><h2>Restart-ийн дараах төлөв</h2><p id="rollout-summary" role="status" aria-live="polite"></p></div><button id="rollout-refresh" class="button secondary" type="button">↻ Дахин шалгах</button></div>
+    <div class="table-wrap"><table><thead><tr><th>Deployment</th><th>Шинэ replica</th><th>Бэлэн / Хүссэн</th><th>Төлөв</th></tr></thead><tbody id="rollout-table"></tbody></table></div>
+  </div>
+</section>
+<footer>Finacle Support <span>{{ namespace }} · Үйл ажиллагааны хяналт</span></footer>
 </main>
 </body></html>

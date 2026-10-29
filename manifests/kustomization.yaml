@@ -1,7 +1,8 @@
 ﻿apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: pre-uat-finacle
+# Namespaces are explicit in each resource. Do not override the UAT access Role.
 resources:
   - deploy.yaml
   - svc.yaml
   - rbac.yaml
+  - rbac-uat.yaml

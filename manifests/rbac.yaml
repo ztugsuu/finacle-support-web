@@ -11,6 +11,23 @@ metadata:
   namespace: pre-uat-finacle
 rules:
   - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list]
+  # Explicit names: extend this list when a new Finbranch ConfigMap is added.
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames:
+      - fnhttp-ac-env
+      - fnhttp-la-env
+      - fnhttp-py-env
+      - fnhttp-rof-env
+      - fip-env
+      - finbranch-fip-ac-env
+      - finbranch-fip-la-env
+      - finbranch-fip-py-env
+      - finbranch-fip-rof-env
+    verbs: [patch]
+  - apiGroups: [""]
     resources: [pods]
     verbs: [get, list]
   - apiGroups: [""]
@@ -19,6 +36,9 @@ rules:
   - apiGroups: [""]
     resources: [pods/exec]
     verbs: [create]
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [get, list]
   - apiGroups: [apps]
     resources: [deployments]
     verbs: [get, list, patch]

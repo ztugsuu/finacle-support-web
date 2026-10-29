@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch, Mock
 
 import app as module
+from fixtures import healthy_deployment
 
 
 def pod(name='fip-7b7c-x1', phase='Running', ready=True):
@@ -16,6 +17,7 @@ def pod(name='fip-7b7c-x1', phase='Running', ready=True):
 class AppTests(unittest.TestCase):
     def setUp(self):
         self.client = module.app.test_client()
+        self.client.environ_base['HTTP_X_FINACLE_NAMESPACE'] = 'pre-uat-finacle'
 
     def test_page_load_does_not_require_cluster(self):
         with patch.object(module, 'oc', side_effect=AssertionError('unexpected cluster call')):
@@ -80,11 +82,14 @@ class AppTests(unittest.TestCase):
     def test_restart_requires_custom_header_json_and_existing_deployment(self):
         self.assertEqual(self.client.post('/restart', json={'name': 'fip'}).status_code, 403)
         headers = {'X-Requested-With': 'FinacleSupport'}
-        with patch.object(module, 'resources', return_value=[{'metadata': {'name': 'fip'}}]), patch.object(module, 'oc') as execute:
+        deployment, pod_item, rs = healthy_deployment('fip', 'fip-env')
+        with patch.object(module, 'resources', side_effect=lambda kind: {'deployments': [deployment], 'pods': [pod_item], 'replicasets': [rs]}[kind]), patch.object(module, 'oc') as execute:
             self.assertEqual(self.client.post('/restart', headers=headers, json={'name': 'other'}).status_code, 404)
             execute.assert_not_called()
             self.assertEqual(self.client.post('/restart', headers=headers, json={'name': 'fip'}).status_code, 200)
-            execute.assert_called_once_with('rollout', 'restart', 'deployment/fip')
+            execute.assert_called_once()
+            self.assertEqual(execute.call_args.args[:4], ('patch', 'deployment', 'fip', '--type=merge'))
+            self.assertEqual(json.loads(execute.call_args.args[-1])['metadata']['resourceVersion'], '31')
 
     def test_html_logs_are_returned_as_text(self):
         with patch.object(module, 'resources', return_value=[pod()]), patch.object(module, 'oc', return_value='<script>alert(1)</script>'):
