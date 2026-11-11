@@ -77,7 +77,7 @@ class NamespaceTests(unittest.TestCase):
         client = module.app.test_client()
         with patch.object(module, 'oc') as oc:
             self.assertEqual(client.get('/api/overview?namespace=production').status_code, 400)
-            self.assertEqual(client.get('/api/overview?namespace=pre-uat-finacle', headers={'X-Finacle-Namespace': 'pre-uat-finacle'}).status_code, 400)
+            self.assertEqual(client.get('/api/overview?namespace=pre-uat-finacle', headers={'X-Finacle-Namespace': 'uat-finacle'}).status_code, 400)
             self.assertEqual(client.post('/restart', json={'name': 'fip'}, headers={'X-Requested-With': 'FinacleSupport'}).status_code, 400)
             oc.assert_not_called()
 
@@ -95,7 +95,7 @@ class NamespaceTests(unittest.TestCase):
         self.assertTrue(all(cmd[:2] == ['oc', '-n'] for cmd in seen))
 
     def test_uat_page_shows_uat_without_preuat_banner(self):
-        page = module.app.test_client().get('/?namespace=pre-uat-finacle').data.decode()
+        page = module.app.test_client().get('/?namespace=uat-finacle').data.decode()
         self.assertIn('value="uat-finacle" selected', page)
         self.assertNotIn('PRE-UAT ENVIRONMENT', page)
 

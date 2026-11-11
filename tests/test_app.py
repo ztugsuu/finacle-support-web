@@ -1,4 +1,6 @@
 ﻿import json
+import io
+import zipfile
 import subprocess
 import unittest
 from unittest.mock import patch, Mock
@@ -117,6 +119,55 @@ class AppTests(unittest.TestCase):
         self.assertEqual(details[1]['time_kind'], 'modified')
         self.assertEqual(details[1]['timestamp'], 200)
         self.assertEqual(details[0]['time'], '1970-01-01T00:05:00+00:00')
+
+    def test_bulk_download_preserves_full_binary_files_in_zip(self):
+        selected = {'name': 'fnhttpac-pod', 'source': 'fnhttp', 'phase': 'Running',
+                    'fnhttp_service': 'ac', 'containers': ['fnhttpac', 'sidecar']}
+        payloads = [b'full file\x00\xff' + b'x' * (module.MAX_BYTES + 10), b'trace content']
+        with patch.object(module, 'selected_log_pod', return_value=selected), patch.object(module, 'oc_bytes', side_effect=payloads) as execute:
+            response = self.client.post('/api/logs/download?source=fnhttp&pod=fnhttpac-pod',
+                headers={'X-Requested-With': 'FinacleSupport'}, json={'files': ['test.stdout', 'test.trc']})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, 'application/zip')
+        with zipfile.ZipFile(io.BytesIO(response.data)) as archive:
+            self.assertEqual(archive.namelist(), ['test.stdout', 'test.trc'])
+            self.assertEqual(archive.read('test.stdout'), payloads[0])
+            self.assertEqual(archive.read('test.trc'), payloads[1])
+        self.assertEqual(execute.call_args_list[0].args[3], 'fnhttpac')
+        self.assertEqual(execute.call_args_list[0].args[-2], module.SOURCES['fnhttp']['path'] + '/test.stdout')
+        self.assertEqual(int(execute.call_args_list[1].args[-1]), 100000001 - len(payloads[0]))
+
+    def test_bulk_download_rejects_unsafe_and_invalid_selections(self):
+        with patch.object(module, 'oc_bytes') as execute:
+            for source, names in [('fnhttp', []), ('fnhttp', ['../secret']),
+                                  ('fnhttp', ['a'] * 101), ('fip', ['other']), ('unknown', ['a'])]:
+                response = self.client.post('/api/logs/download?source=' + source,
+                    headers={'X-Requested-With': 'FinacleSupport'}, json={'files': names})
+                self.assertEqual(response.status_code, 400)
+            execute.assert_not_called()
+        selected = {'name': 'fnhttpac-pod', 'source': 'fnhttp', 'phase': 'Running',
+                    'fnhttp_service': 'ac', 'containers': ['fnhttpac', 'sidecar']}
+        with patch.object(module, 'selected_log_pod', return_value=selected), patch.object(module, 'oc_bytes') as execute:
+            response = self.client.post('/api/logs/download?source=fnhttp&container=sidecar',
+                headers={'X-Requested-With': 'FinacleSupport'}, json={'files': ['test.trc']})
+            self.assertEqual(response.status_code, 400)
+            execute.assert_not_called()
+        with patch.object(module, 'selected_log_pod', return_value=selected), patch.object(module, 'oc_bytes', side_effect=module.ClusterError('missing file')):
+            response = self.client.post('/api/logs/download?source=fnhttp',
+                headers={'X-Requested-With': 'FinacleSupport'}, json={'files': ['missing.trc']})
+            self.assertEqual(response.status_code, 502)
+            self.assertEqual(response.mimetype, 'application/json')
+
+    def test_bulk_download_size_limit_returns_no_partial_zip(self):
+        selected = {'name': 'fnhttpac-pod', 'source': 'fnhttp', 'phase': 'Running',
+                    'fnhttp_service': 'ac', 'containers': ['fnhttpac']}
+        oversized = Mock()
+        oversized.__len__ = Mock(return_value=100000001)
+        with patch.object(module, 'selected_log_pod', return_value=selected), patch.object(module, 'oc_bytes', return_value=oversized):
+            response = self.client.post('/api/logs/download?source=fnhttp',
+                headers={'X-Requested-With': 'FinacleSupport'}, json={'files': ['large.trc']})
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response.mimetype, 'application/json')
 
     def test_rejects_arbitrary_paths_and_invalid_lines_before_cluster(self):
         for query in [{'source': 'fip', 'file': '../../etc/passwd'},

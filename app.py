@@ -1,8 +1,10 @@
-﻿from flask import Flask, render_template, request, jsonify, Response
+﻿from flask import Flask, render_template, request, jsonify, Response, send_file
 import json
 from flask import g, has_request_context
 from restart_guard import eligibility
 import hashlib
+import io
+import zipfile
 import os
 import re
 import subprocess
@@ -186,7 +188,7 @@ def restart_blocked(error):
     return jsonify(message=str(error)), 409
 
 
-def oc(*args):
+def oc_bytes(*args):
     try:
         result = subprocess.run(['oc', '-n', current_namespace(), '--request-timeout=15s', *args],
                                 capture_output=True, timeout=20, check=False)
@@ -199,7 +201,11 @@ def oc(*args):
         error = result.stderr.decode('utf-8', errors='replace').strip()
         app.logger.warning('oc failed: %s', error)
         raise ClusterError(error[:2000] or 'OpenShift хүсэлт амжилтгүй боллоо.')
-    return result.stdout.decode('utf-8', errors='replace')
+    return result.stdout
+
+
+def oc(*args):
+    return oc_bytes(*args).decode('utf-8', errors='replace')
 
 
 def resources(kind):
@@ -351,6 +357,45 @@ def log_files():
     details.sort(key=lambda item: (-item['timestamp'], item['name']))
     return jsonify(files=[item['name'] for item in details], file_details=details,
                    pod=pod['name'], container=container)
+
+
+@app.post('/api/logs/download')
+def download_log_files():
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or request.headers.get('X-Requested-With') != 'FinacleSupport':
+        return jsonify(message='Хүсэлт зөвшөөрөгдөөгүй.'), 400
+    source = request.args.get('source')
+    names = body.get('files')
+    if (source not in SOURCES or not isinstance(names, list) or not 1 <= len(names) <= 100
+            or any(not valid_log_filename(name) for name in names)):
+        return jsonify(message='1–100 файл сонгоно уу.'), 400
+    names = list(dict.fromkeys(names))
+    if source != 'fnhttp' and any(name not in SOURCES[source]['files'] for name in names):
+        return jsonify(message='Файлын сонголт зөвшөөрөгдөөгүй.'), 400
+    pod = selected_log_pod(source)
+    if not pod:
+        return jsonify(message='Pod олдсонгүй.'), 404
+    if pod['phase'] != 'Running':
+        return jsonify(message='Сонгосон pod ажиллаж эхлээгүй байна.'), 409
+    container = log_container(pod)
+    if container not in pod['containers']:
+        return jsonify(message='Container сонголт буруу байна.'), 400
+    archive = io.BytesIO()
+    remaining = 100 * 1000000
+    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
+        for name in names:
+            path = SOURCES[source]['path'] + '/' + name
+            # Reject symlinks/non-files. Bound the read without truncating a successful download.
+            data = oc_bytes('exec', pod['name'], '-c', container, '--', 'sh', '-c',
+                            'test -f "$1" && test ! -L "$1" && head -c "$2" -- "$1"',
+                            'download-log', path, str(remaining + 1))
+            if len(data) > remaining:
+                return jsonify(message='Сонгосон файлуудын нийт хэмжээ 100 MB-аас хэтэрсэн байна. Цөөн файл сонгоно уу.'), 413
+            remaining -= len(data)
+            bundle.writestr(name, data)
+    archive.seek(0)
+    return send_file(archive, mimetype='application/zip', as_attachment=True,
+                     download_name=f"{pod['name']}-logs.zip")
 
 
 @app.get('/api/logs')

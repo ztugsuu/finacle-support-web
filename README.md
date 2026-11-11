@@ -154,3 +154,5 @@ without connecting to the cluster.
 For local development, install `requirements.txt`, authenticate `oc` to the intended cluster, then run `python app.py`. `/health` checks the web process; `/api/overview` checks cluster access. A failure to read deployments does not hide available pod information.
 
 After deployment, confirm both source tabs show the intended pods, select the correct application container, and open each of the five files. A permission or missing-file error is displayed in the log panel. Use a controlled environment to validate the optional restart action.
+
+Checkboxes below the file picker select full files from the current pod/container for a ZIP download. Select all is available. Choices survive automatic refresh and reset on source/pod/container changes. ZIP downloads preserve raw file bytes, support up to 100 files totaling 100 MB, and fail with a message if a file cannot be read or the total is exceeded; no partial ZIP is returned. The existing single-file download saves the displayed snapshot.

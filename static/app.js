@@ -87,10 +87,86 @@ function renderLogs() {
   $('line-count').textContent = `${filtered.length} мөр`;
   output.scrollTop = $('autoscroll').checked ? output.scrollHeight : previousScroll;
 }
+let fileSelectionContext = '', selectedFiles = new Set(), bulkBusy = false;
+function bulkContext() { return `${source}/${$('pod').value}/${$('container').value}`; }
+function updateFileSelection() {
+  const boxes = [...$('file-checkboxes').querySelectorAll('input')];
+  $('files-selected').textContent = `${selectedFiles.size} файл сонгосон`;
+  $('files-all').checked = boxes.length > 0 && boxes.every(box => box.checked);
+  $('files-all').indeterminate = selectedFiles.size > 0 && !$('files-all').checked;
+  $('download-selected').disabled = bulkBusy || !selectedFiles.size;
+  $('download-selected').classList.toggle('is-loading', bulkBusy);
+  $('download-selected').setAttribute('aria-busy', String(bulkBusy));
+  $('download-selected').textContent = bulkBusy ? 'ZIP бэлтгэж байна…' : '↓ Сонгосон файлуудыг ZIP татах';
+}
+function renderFileChoices(files) {
+  const context = bulkContext();
+  if (context !== fileSelectionContext) { selectedFiles.clear(); fileSelectionContext = context; }
+  const available = new Set(files.map(file => file.name));
+  selectedFiles = new Set([...selectedFiles].filter(name => available.has(name)));
+  $('file-checkboxes').replaceChildren(...files.map(file => {
+    const label = document.createElement('label'), box = document.createElement('input');
+    box.type = 'checkbox'; box.value = file.name; box.checked = selectedFiles.has(file.name);
+    box.addEventListener('change', () => {
+      if (box.checked) selectedFiles.add(file.name); else selectedFiles.delete(file.name);
+      updateFileSelection();
+    });
+    label.append(box, document.createTextNode(file.label || file.name)); return label;
+  }));
+  updateFileSelection();
+}
+$('files-all').addEventListener('change', () => {
+  $('file-checkboxes').querySelectorAll('input').forEach(box => {
+    box.checked = $('files-all').checked;
+    if (box.checked) selectedFiles.add(box.value); else selectedFiles.delete(box.value);
+  });
+  updateFileSelection();
+});
+function bulkNotice(message, state) {
+  const panel = $('bulk-message');
+  panel.hidden = false; panel.className = `bulk-status ${state}`;
+  panel.textContent = message;
+}
+$('download-selected').addEventListener('click', async () => {
+  if (bulkBusy || !selectedFiles.size) return;
+  if (selectedFiles.size > 100) {
+    bulkNotice(`${selectedFiles.size} файл сонгосон байна. Нэг удаад 100 хүртэл файл татна. Сонголтоо багасгана уу. ZIP бэлтгэх үйлдэл эхлээгүй.`, 'error');
+    return;
+  }
+  const files = [...selectedFiles];
+  const targetPod = $('pod').value;
+  const query = new URLSearchParams({source, pod: targetPod, container: $('container').value});
+  const name = `${$('pod').value}-logs.zip`;
+  bulkBusy = true; updateFileSelection();
+  const started = Date.now();
+  let phase = `${targetPod}: ${files.length} файлыг уншиж, ZIP бэлтгэж байна`;
+  const progress = () => bulkNotice(`${phase} · ${Math.floor((Date.now() - started) / 1000)} сек. Хүлээнэ үү…`, 'loading');
+  progress();
+  const progressTimer = setInterval(progress, 1000);
+  try {
+    const response = await fetch(`/api/logs/download?${query}`, {
+      method: 'POST', headers: {'Content-Type': 'application/json', 'X-Requested-With': 'FinacleSupport', 'X-Finacle-Namespace': namespace},
+      body: JSON.stringify({files}), signal: AbortSignal.timeout(180000)
+    });
+    if (!response.ok) { const error = await response.json(); throw new Error(error.message || 'ZIP татаж чадсангүй.'); }
+    phase = 'ZIP бэлэн боллоо. Файлыг хүлээн авч байна'; progress();
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a'); link.href = url; link.download = name; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    bulkNotice(`${files.length} файлтай ZIP бэлэн. Browser-т татах хүсэлт илгээлээ.`, 'success');
+  } catch (error) {
+    bulkNotice(error.name === 'TimeoutError' || error.name === 'AbortError'
+      ? 'ZIP бэлтгэх хугацаа хэтэрлээ. Цөөн файл сонгоод дахин оролдоно уу.'
+      : error.message, 'error');
+  }
+  finally { clearInterval(progressTimer); bulkBusy = false; updateFileSelection(); }
+});
 function resetLogs() {
   generation++; clearTimeout(logTimer); logRequest?.abort(); content = '';
   $('log-output').textContent = 'Log уншиж байна…'; $('line-count').textContent = '0 мөр';
   $('log-updated').textContent = 'Уншаагүй'; $('truncated').hidden = true;
+  if (!sources[source].dynamic || bulkContext() !== fileSelectionContext)
+    renderFileChoices(sources[source].dynamic ? [] : sources[source].files.map(name => ({name})));
   notice('log-error', ''); readLogs();
 }
 async function readLogs() {
@@ -117,11 +193,13 @@ async function readLogs() {
       const listing = await api(`/api/log-files?${selection}`, {signal: controller.signal});
       if (current !== generation) return;
       const previousFile = $('file').value;
-      $('file').replaceChildren(...listing.file_details.map(file => {
+      const choices = listing.file_details.map(file => {
         const time = new Date(file.time).toLocaleString('mn-MN', {timeZone: 'Asia/Ulaanbaatar', hour12: false});
         const label = file.time_kind === 'created' ? 'Үүссэн' : 'Өөрчлөгдсөн';
-        return new Option(`${time} (УБ) · ${label} · ${file.name} · ${(file.size_bytes / 1000000).toFixed(2)} MB`, file.name);
-      }));
+        return {name: file.name, label: `${time} (УБ) · ${label} · ${file.name} · ${(file.size_bytes / 1000000).toFixed(2)} MB`};
+      });
+      $('file').replaceChildren(...choices.map(file => new Option(file.label, file.name)));
+      renderFileChoices(choices);
       if (listing.files.includes(previousFile)) $('file').value = previousFile;
       if (!listing.files.length) {
         content = ''; notice('log-error', '');
