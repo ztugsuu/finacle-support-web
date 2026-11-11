@@ -3,6 +3,8 @@ kind: Route
 metadata:
   name: finacle-support-web
   namespace: pre-uat-finacle
+  annotations:
+    haproxy.router.openshift.io/timeout: 180s
 spec:
   host: finacle-support-web-pre-uat-finacle.apps.testocp.mbank.local
   to:

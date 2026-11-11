@@ -26,7 +26,7 @@ function New-AppSecret([string] $Name, [string] $Key, [string] $EncodedValue) {
     Write-Host "Created $Name in $namespace."
 }
 
-$ldapExists = Test-SecretExists 'finacle-support-ldap'
+$ldapExists = Test-SecretExists 'my-ldap-bind-password'
 $authExists = Test-SecretExists 'finacle-support-auth'
 
 if (-not $ldapExists) {
@@ -39,7 +39,7 @@ if (-not $ldapExists) {
         $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($password)
         $clearPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
         $encodedPassword = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($clearPassword))
-        New-AppSecret 'finacle-support-ldap' 'bindPassword' $encodedPassword
+        New-AppSecret 'my-ldap-bind-password' 'bindPassword' $encodedPassword
     }
     finally {
         if ($pointer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
@@ -47,7 +47,7 @@ if (-not $ldapExists) {
         $clearPassword = $null
         $encodedPassword = $null
     }
-} else { Write-Host 'Keeping existing finacle-support-ldap.' }
+} else { Write-Host 'Keeping existing my-ldap-bind-password.' }
 
 if (-not $authExists) {
     $random = [Security.Cryptography.RandomNumberGenerator]::Create()

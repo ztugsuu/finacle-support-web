@@ -89,7 +89,8 @@ function renderLogs() {
   output.scrollTop = $('autoscroll').checked ? output.scrollHeight : previousScroll;
 }
 let fileSelectionContext = '', selectedFiles = new Set(), bulkBusy = false;
-function bulkContext() { return `${source}/${$('pod').value}/${$('container').value}`; }
+function bulkContext() { return `${source}/${$('pod').value}/${$('container').value}/${source === 'fnhttp' ? $('fnhttp-folder').value : ''}`; }
+function logDirectory() { return source === 'fnhttp' ? `/usr/local/finacle/be/CDCI_LOGS/${$('fnhttp-folder').value}` : sources[source].path; }
 function updateFileSelection() {
   const boxes = [...$('file-checkboxes').querySelectorAll('input')];
   $('files-selected').textContent = `${selectedFiles.size} файл сонгосон`;
@@ -128,40 +129,65 @@ function bulkNotice(message, state) {
   panel.hidden = false; panel.className = `bulk-status ${state}`;
   panel.textContent = message;
 }
+let batchDownloadUrls = [];
 $('download-selected').addEventListener('click', async () => {
   if (bulkBusy || !selectedFiles.size) return;
-  if (selectedFiles.size > 100) {
-    bulkNotice(`${selectedFiles.size} файл сонгосон байна. Нэг удаад 100 хүртэл файл татна. Сонголтоо багасгана уу. ZIP бэлтгэх үйлдэл эхлээгүй.`, 'error');
-    return;
-  }
   const files = [...selectedFiles];
   const targetPod = $('pod').value;
-  const query = new URLSearchParams({source, pod: targetPod, container: $('container').value});
-  const name = `${$('pod').value}-logs.zip`;
+  const query = new URLSearchParams({source, pod: targetPod, container: $('container').value, folder: source === 'fnhttp' ? $('fnhttp-folder').value : ''});
+  const batches = Array.from({length: Math.ceil(files.length / 100)}, (_, index) => files.slice(index * 100, (index + 1) * 100));
+  batchDownloadUrls.forEach(url => URL.revokeObjectURL(url)); batchDownloadUrls = [];
+  $('batch-downloads').replaceChildren();
   bulkBusy = true; updateFileSelection();
   const started = Date.now();
-  let phase = `${targetPod}: ${files.length} файлыг уншиж, ZIP бэлтгэж байна`;
-  const progress = () => bulkNotice(`${phase} · ${Math.floor((Date.now() - started) / 1000)} сек. Хүлээнэ үү…`, 'loading');
+  let completed = 0, currentBatch = 1;
+  let phase = '';
+  const progress = () => bulkNotice(`${phase} · ${completed}/${batches.length} ZIP бэлэн · ${Math.floor((Date.now() - started) / 1000)} сек. Хүлээнэ үү…`, 'loading');
+  phase = `${targetPod}: 1/${batches.length} багц ZIP бэлтгэж байна`;
   progress();
   const progressTimer = setInterval(progress, 1000);
   try {
-    const response = await fetch(`/api/logs/download?${query}`, {
-      method: 'POST', headers: {'Content-Type': 'application/json', 'X-Requested-With': 'FinacleSupport', 'X-Finacle-Namespace': namespace},
-      body: JSON.stringify({files}), signal: AbortSignal.timeout(180000)
-    });
-    if (!response.ok) { const error = await response.json(); throw new Error(error.message || 'ZIP татаж чадсангүй.'); }
-    phase = 'ZIP бэлэн боллоо. Файлыг хүлээн авч байна'; progress();
-    const url = URL.createObjectURL(await response.blob());
-    const link = document.createElement('a'); link.href = url; link.download = name; link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    bulkNotice(`${files.length} файлтай ZIP бэлэн. Browser-т татах хүсэлт илгээлээ.`, 'success');
+    for (let index = 0; index < batches.length; index++) {
+      currentBatch = index + 1;
+      phase = `${targetPod}: ${currentBatch}/${batches.length} багц (${batches[index].length} файл) ZIP бэлтгэж байна`;
+      progress();
+      const response = await fetch(`/api/logs/download?${query}`, {
+        method: 'POST', headers: {'Content-Type': 'application/json', 'X-Requested-With': 'FinacleSupport', 'X-Finacle-Namespace': namespace},
+        body: JSON.stringify({files: batches[index]}), signal: AbortSignal.timeout(180000)
+      });
+      if (response.status === 401) { location.assign('/login'); throw new Error('Нэвтрэх шаардлагатай.'); }
+      const contentType = response.headers.get('Content-Type') || '';
+      if (!response.ok) {
+        let message = `ZIP хүсэлт амжилтгүй (HTTP ${response.status}).`;
+        if (contentType.includes('application/json')) {
+          try { message = (await response.json()).message || message; } catch { /* Keep HTTP status. */ }
+        } else if ([502, 503, 504].includes(response.status)) {
+          message += ' Route/proxy хариу өгөх хугацаа хэтэрсэн эсвэл үйлчилгээ түр боломжгүй байна.';
+        } else {
+          message += ' Сервер JSON-ийн оронд өөр хариу буцаалаа.';
+        }
+        throw new Error(message);
+      }
+      if (!contentType.includes('application/zip')) throw new Error(`ZIP-ийн оронд өөр хариу ирлээ (HTTP ${response.status}). Нэвтрэлт болон Route тохиргоог шалгана уу.`);
+      phase = `${currentBatch}/${batches.length} багц бэлэн. Файлыг хүлээн авч байна`; progress();
+      const url = URL.createObjectURL(await response.blob());
+      batchDownloadUrls.push(url);
+      const name = batches.length === 1 ? `${targetPod}-logs.zip`
+        : `${targetPod}-logs-part-${String(currentBatch).padStart(3, '0')}-of-${String(batches.length).padStart(3, '0')}.zip`;
+      const link = document.createElement('a'); link.href = url; link.download = name;
+      link.textContent = `${currentBatch}/${batches.length} ZIP · ${batches[index].length} файл · Татах`;
+      $('batch-downloads').append(link); link.click();
+      completed++;
+    }
+    bulkNotice(`${files.length} файлыг ${completed} ZIP болгон бэлтгэж, browser-т татах хүсэлт илгээлээ. Автомат таталт хаагдсан бол доорх холбоосуудаар татна уу.`, 'success');
   } catch (error) {
-    bulkNotice(error.name === 'TimeoutError' || error.name === 'AbortError'
-      ? 'ZIP бэлтгэх хугацаа хэтэрлээ. Цөөн файл сонгоод дахин оролдоно уу.'
-      : error.message, 'error');
+    const reason = error.name === 'TimeoutError' || error.name === 'AbortError'
+      ? 'ZIP бэлтгэх хугацаа хэтэрлээ.' : error.message;
+    bulkNotice(`${currentBatch}/${batches.length} багц дээр зогслоо: ${reason} ${completed} ZIP бэлэн; холбоосоор татах боломжтой.`, 'error');
   }
   finally { clearInterval(progressTimer); bulkBusy = false; updateFileSelection(); }
 });
+
 function resetLogs() {
   generation++; clearTimeout(logTimer); logRequest?.abort(); content = '';
   $('log-output').textContent = 'Log уншиж байна…'; $('line-count').textContent = '0 мөр';
@@ -174,7 +200,7 @@ async function readLogs() {
   clearTimeout(logTimer); logRequest?.abort();
   if (activeScreen !== 'logs') return;
   const current = ++generation;
-  $('log-path').textContent = `${sources[source].path}/${$('file').value}`;
+  $('log-path').textContent = `${logDirectory()}/${$('file').value}`;
   if (!$('pod').value) {
     $('log-state').textContent = 'Pod байхгүй'; $('log-output').textContent = 'Энэ эх үүсвэрт тохирох pod олдсонгүй. Төлөв шинэчилнэ үү.';
     return;
@@ -191,6 +217,20 @@ async function readLogs() {
   try {
     if (sources[source].dynamic) {
       const selection = new URLSearchParams({source, service: source === 'fnhttp' ? $('fnhttp-service').value : '', pod: $('pod').value, container: $('container').value});
+      const directoryListing = await api(`/api/log-folders?${selection}`, {signal: controller.signal});
+      if (current !== generation) return;
+      const previousFolder = $('fnhttp-folder').value || 'FIVUSR';
+      $('fnhttp-folder').replaceChildren(...directoryListing.folders.map(option));
+      if (directoryListing.folders.includes(previousFolder)) $('fnhttp-folder').value = previousFolder;
+      if (!directoryListing.folders.length) {
+        $('file').replaceChildren(); renderFileChoices([]); content = '';
+        notice('log-error', ''); $('log-state').textContent = 'Хавтас байхгүй';
+        $('log-output').textContent = 'Энэ pod/container-ийн CDCI_LOGS дотор хавтас байхгүй байна.';
+        $('line-count').textContent = '0 мөр'; $('truncated').hidden = true;
+        $('log-path').textContent = '/usr/local/finacle/be/CDCI_LOGS';
+        return;
+      }
+      selection.set('folder', $('fnhttp-folder').value);
       const listing = await api(`/api/log-files?${selection}`, {signal: controller.signal});
       if (current !== generation) return;
       const previousFile = $('file').value;
@@ -205,14 +245,14 @@ async function readLogs() {
       if (!listing.files.length) {
         content = ''; notice('log-error', '');
         $('log-state').textContent = 'Log файл байхгүй';
-        $('log-output').textContent = 'Энэ pod/container-ийн FIVUSR хавтас дотор файл байхгүй байна.';
+        $('log-output').textContent = `Энэ pod/container-ийн ${$('fnhttp-folder').value} хавтас дотор файл байхгүй байна.`;
         $('line-count').textContent = '0 мөр'; $('log-updated').textContent = 'Уншаагүй';
         $('truncated').hidden = true;
         return;
       }
-      $('log-path').textContent = `${sources[source].path}/${$('file').value}`;
+      $('log-path').textContent = `${logDirectory()}/${$('file').value}`;
     }
-    const query = new URLSearchParams({source, service: source === 'fnhttp' ? $('fnhttp-service').value : '', pod: $('pod').value, container: $('container').value, file: $('file').value, lines: $('lines').value});
+    const query = new URLSearchParams({source, service: source === 'fnhttp' ? $('fnhttp-service').value : '', pod: $('pod').value, container: $('container').value, folder: source === 'fnhttp' ? $('fnhttp-folder').value : '', file: $('file').value, lines: $('lines').value});
     const data = await api(`/api/logs?${query}`, {signal: logRequest.signal});
     if (current !== generation) return;
     content = data.content; renderLogs(); notice('log-error', '');
@@ -288,12 +328,13 @@ async function restart(name, button) {
 document.querySelectorAll('[data-source]').forEach(button => button.addEventListener('click', () => {
   source = button.dataset.source;
   $('fnhttp-service-filter').hidden = source !== 'fnhttp';
+  $('fnhttp-folder-filter').hidden = source !== 'fnhttp';
   document.querySelectorAll('[data-source]').forEach(tab => { const active = tab === button; tab.classList.toggle('selected', active); tab.setAttribute('aria-pressed', String(active)); });
   $('file').replaceChildren(...sources[source].files.map(option)); fillPods(); resetLogs();
 }));
 $('fnhttp-service').addEventListener('change', () => { fillPods(); $('file').replaceChildren(); resetLogs(); });
 $('pod').addEventListener('change', () => { fillContainers(); resetLogs(); });
-['container','file','lines'].forEach(id => $(id).addEventListener('change', resetLogs));
+['container','file','lines','fnhttp-folder'].forEach(id => $(id).addEventListener('change', resetLogs));
 $('search').addEventListener('input', renderLogs);
 $('refresh').addEventListener('click', refreshOverview);
 $('read').addEventListener('click', readLogs);

@@ -4,3 +4,33 @@
 .project-picker{display:flex;gap:10px;align-items:center;font-size:12px;color:var(--muted)}.project-picker select{margin:0;min-width:160px}#deploy-table td:last-child{white-space:normal;min-width:240px}#deploy-table button:disabled{cursor:not-allowed}#control-current-status{overflow-wrap:anywhere}@media(max-width:760px){header{height:auto;min-height:72px;gap:10px;flex-wrap:wrap;padding:12px 0}.project-picker{width:100%;justify-content:space-between}}
 
 body.login-page{min-height:100vh;display:grid;place-items:center;padding:24px;background:#f3f6fc}main.login-card{margin:0;width:100%;max-width:420px;padding:32px;background:white;border:1px solid #dce4ed;border-radius:14px;box-shadow:0 12px 36px #10283c12}.login-mark{width:44px;height:44px;display:grid;place-items:center;background:#008978;color:white;border-radius:12px;font-size:24px;font-weight:700}.login-card h1{font-size:25px}.login-card form{display:flex;flex-direction:column;gap:10px;margin-top:24px}.login-card label{font-size:12px;font-weight:600;color:#40536c}.login-card input:not([type=hidden]){width:100%;padding:11px 12px;border:1px solid #cbd6e3;border-radius:7px;font:inherit;box-sizing:border-box}.login-card input:focus{outline:2px solid #008978;outline-offset:2px}.login-card button{margin-top:10px;background:#008978;color:white;border:0;padding:12px}.login-card .notice{margin-top:18px;padding:12px;border-radius:7px;line-height:1.6}
+
+/* Log file selection and ZIP download status. */
+.log-filters{grid-template-columns:minmax(80px,.5fr) minmax(0,1.7fr) minmax(0,1fr) minmax(0,1fr) minmax(80px,.5fr)}
+.log-file-filter{grid-column:1/-1;grid-row:2}
+.log-filters select{min-width:0;max-width:100%;text-overflow:ellipsis}
+.bulk-files{padding:0 24px 22px;min-width:0}
+.bulk-actions{display:flex;align-items:center;gap:12px 18px;flex-wrap:wrap;font-size:12px}
+.bulk-actions>label{display:flex;align-items:center;gap:7px;white-space:nowrap}
+.bulk-actions input{margin:0}
+.bulk-files>p{margin:10px 0;color:var(--muted)}
+.file-checkboxes{max-height:280px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fcfdff;scrollbar-gutter:stable;margin-top:12px;overscroll-behavior:contain}
+.file-checkboxes:empty{display:none}
+.file-checkboxes label{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line);font:12px/1.6 Consolas,monospace;overflow-wrap:anywhere;min-width:0}
+.file-checkboxes label:last-child{border-bottom:0}
+.file-checkboxes label:hover{background:#edf8f6}
+.file-checkboxes input{flex:0 0 auto;margin:3px 0 0;width:14px;height:14px}
+#bulk-message{font-size:12px;margin-top:12px}
+.bulk-status{padding:12px 16px;border-radius:7px;border:1px solid #b6ddd8;background:#edf8f6;color:#176b60;line-height:1.6;overflow-wrap:anywhere}
+.bulk-status.error{border-color:#efb3b3;background:#fff0f0;color:#a32d2d}
+.bulk-status.success{background:#e7f5ef;color:#218168}
+.is-loading::before,.bulk-status.loading::before{content:"";display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;margin-right:8px;vertical-align:middle;animation:zip-spin .8s linear infinite}
+.is-loading{cursor:wait;opacity:.8}
+.session-actions{display:flex;align-items:center;gap:10px;font-size:12px;min-width:0}
+.session-actions>span{overflow-wrap:anywhere}
+@keyframes zip-spin{to{transform:rotate(360deg)}}
+@media(max-width:1100px){.log-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.log-file-filter{grid-row:auto}}
+@media(max-width:760px){.bulk-files{padding:0 18px 18px}.bulk-actions{align-items:flex-start}.bulk-actions .button{white-space:normal;text-align:left}.file-checkboxes{max-height:240px}.file-checkboxes label{font-size:11px}.log-filters{grid-template-columns:minmax(0,1fr)}.session-actions{flex-wrap:wrap}header{height:auto;min-height:72px;flex-wrap:wrap;gap:12px;padding:12px 0}.source-tabs{gap:16px;flex-wrap:wrap}}
+@media(prefers-reduced-motion:reduce){.is-loading::before,.bulk-status.loading::before{animation:none}}
+
+#batch-downloads{display:flex;gap:8px;flex-wrap:wrap}#batch-downloads a{display:inline-block;margin-top:10px;padding:8px 12px;border:1px solid #b6ddd8;border-radius:6px;background:#edf8f6;color:var(--teal);font-size:12px}#batch-downloads:empty{display:none}

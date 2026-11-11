@@ -9,7 +9,7 @@ Flask dashboard for `pre-uat-finacle` and `uat-finacle`. Select the project in t
 | `fip`, `fip-*` | `/usr/local/finacle/fe/common/log/fsb/fsbhttp` | `ciErrorLog.log`, `ciDebugLog.log`, `instrumentationLog.log` |
 | `fnbrnmpy`, `fnbrnmpy-*` | `/usr/local/finacle/fe/common/log/finint/fcoremb` | `ciErrorLog.log`, `instrumentationLog.log` |
 
-FNHTTP logs are discovered per selected pod/container in `/usr/local/finacle/be/CDCI_LOGS/FIVUSR` (all direct regular files, including `.stdout`, `.trc`, `.log` and files without extensions). The file picker shows file sizes after each filename in MB (1 MB = 1,000,000 bytes, two decimal places). It shows timestamps in Asia/Ulaanbaatar time and sorts newest first by filesystem birth time (`stat %W`); if unavailable, it uses modification time (`%Y`) and labels it accordingly. Equal timestamps sort by filename. Automatic refresh preserves the selected file. Only pods owned through ReplicaSets by deployments starting with `fnhttp` are eligible; restart Job pods are excluded. A missing directory or no matching files shows a normal empty state and is checked again on refresh. Select ac, la, py or rf, then a matching replica and file. FNHTTP reads only the corresponding fnhttpac, fnhttpla, fnhttppy or fnhttprf application container; sidecars cannot be selected.
+FNHTTP folders are discovered dynamically under `/usr/local/finacle/be/CDCI_LOGS` for each selected pod/container. Select a folder (default `FIVUSR` when present) to list its files (all direct regular files, including `.stdout`, `.trc`, `.log` and files without extensions). The file picker shows file sizes after each filename in MB (1 MB = 1,000,000 bytes, two decimal places). It shows timestamps in Asia/Ulaanbaatar time and sorts newest first by filesystem birth time (`stat %W`); if unavailable, it uses modification time (`%Y`) and labels it accordingly. Equal timestamps sort by filename. Automatic refresh preserves the selected file. Only pods owned through ReplicaSets by deployments starting with `fnhttp` are eligible; restart Job pods are excluded. A missing directory or no matching files shows a normal empty state and is checked again on refresh. Select ac, la, py or rf, then a matching replica, folder and file. FNHTTP reads only the corresponding fnhttpac, fnhttpla, fnhttppy or fnhttprf application container; sidecars cannot be selected.
 
 The dashboard discovers actual pod names after rollouts. Select a replica and container if more than one is available. The default is a ready pod and its first container; choose the Finacle container when a sidecar comes first.
 
@@ -175,15 +175,15 @@ The admin-provided OpenShift identity-provider YAML maps to these web settings:
 The admin LDAP attribute (`утга1`) is confirmed as `sAMAccountName`.
 `LDAP_USERNAME_ATTRIBUTE=sAMAccountName` is configured in the Deployment.
 Log in using your `sAMAccountName` value and your LDAP password.
-`утга2` represents a Secret name, not the password itself. The web uses its own
-`finacle-support-ldap` Secret, with key `bindPassword`, in `pre-uat-finacle`.
+The provided OAuth YAML uses `ldap-bind-password`, while the confirmed application password Secret is `my-ldap-bind-password`. These are Secret references, not password values. The web uses its own
+`my-ldap-bind-password` Secret, with key `bindPassword`, in `pre-uat-finacle`.
 An OpenShift OAuth Secret in `openshift-config` cannot be referenced directly by
 this Deployment; ask the admin to provision its bind password in the web namespace.
 Do not commit passwords or Secret exports to Git.
 
 Before applying the Deployment, provision both required Secrets in `pre-uat-finacle`:
 
-- `finacle-support-ldap`: key `bindPassword`, containing the bind account password.
+- `my-ldap-bind-password`: key `bindPassword`, containing the bind account password.
 - `finacle-support-auth`: key `SECRET_KEY`, containing a strong random session
   signing key shared by all web workers/replicas (at least 32 random bytes).
 
@@ -235,3 +235,22 @@ stop the local server and run `.\scripts\start-local.ps1 -PromptBindPassword`.
 LDAP result 49 means the server rejected the service credentials; it can also reflect
 account restrictions. Codes 8/13 indicate the server requires stronger/confidential
 transport. The app reports numeric results without exposing directory diagnostics.
+
+### Batch ZIP downloads
+
+Checkbox selections are downloaded sequentially in groups of 100 files. For example,
+951 files produce 10 ZIPs (nine with 100 files and one with 51). Each batch retains
+the server's 100 MB limit. Progress shows the current and completed batches.
+Numbered filenames identify ZIP parts. Each completed ZIP also has a manual download
+link if the browser blocks automatic multiple downloads. A failed batch stops the
+remaining requests and preserves the already completed links. Starting a new download
+replaces the previous links. Selections and the target pod/container are captured at
+start, so automatic log refresh does not change an in-flight job.
+
+ZIP batches use one bounded `oc exec` call to read up to 100 files, rather than
+opening a separate remote connection per file. Each read has a 120-second timeout;
+the Route manifest sets `haproxy.router.openshift.io/timeout: 180s`. HTML gateway
+errors are displayed with the HTTP status and a proxy explanation. Rebuild the
+application image and apply the Route manifest to deploy these fixes.
+
+New direct CDCI_LOGS folders appear automatically. Missing folders/root directories and empty folders display normal empty states. Only direct files are listed; nested subfolders and symlink folders are excluded. Folder changes clear checkbox selections. ZIP batches retain the folder selected when the download started.

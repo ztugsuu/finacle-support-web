@@ -20,7 +20,7 @@ spec:
         - name: securereg
       containers:
         - name: finacle-support-web
-          image: securereg.m-bank.mn:5000/finacle-support-web:2.1.1
+          image: securereg.m-bank.mn:5000/finacle-support-web:3.0
           env:
             - name: NAMESPACE
               value: pre-uat-finacle
@@ -36,7 +36,7 @@ spec:
             - name: LDAP_BIND_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: finacle-support-ldap
+                  name: my-ldap-bind-password
                   key: bindPassword
             - name: LDAP_INSECURE
               value: "true"

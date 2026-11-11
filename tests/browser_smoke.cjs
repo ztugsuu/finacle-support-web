@@ -17,6 +17,8 @@ assert.equal(renderedUat.status, 0, renderedUat.stderr);
 let failPreview = false, applied = 0, rolloutReads = 0;
 let restartAllowed = true, resets = 0, restartRequests = 0;
 const tracking = {configmap: 'fnhttp-ac-env', restarted_at: 'mock-restart', names: ['fnhttpac']};
+let zipMode = 'error', failZipBatch = 0;
+const zipBodies = [];
 const requests = [];
 const scopedRequests = [];
 const server = http.createServer((req, res) => {
@@ -30,9 +32,28 @@ const server = http.createServer((req, res) => {
   res.setHeader('Content-Type', 'application/json');
   let data;
   if (req.url.startsWith('/api/logs/download?')) {
-    res.statusCode = 500;
-    return setTimeout(() => res.end(JSON.stringify({message: 'ZIP mock read failure'})), 1600);
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      zipBodies.push(JSON.parse(body));
+      if (zipMode === 'html') {
+        res.statusCode = 504;
+        res.setHeader('Content-Type', 'text/html');
+        return res.end('<html><body>Gateway timeout</body></html>');
+      }
+      if (zipMode === 'error' || zipBodies.length === failZipBatch) {
+        res.statusCode = 500;
+        setTimeout(() => res.end(JSON.stringify({message: 'ZIP mock read failure'})), 1600);
+      } else {
+        res.setHeader('Content-Type', 'application/zip');
+        setTimeout(() => res.end(Buffer.from('504b0506000000000000000000000000000000000000', 'hex')), 40);
+      }
+    });
+    return;
   }
+  if (req.url.startsWith('/api/log-folders?')) return res.end(JSON.stringify({folders:['FIVUSR','KHANDARMAA.B','REPORTS','UPLOAD']}));
+  if (req.url.startsWith('/api/log-files?')) return res.end(JSON.stringify({files:['a.trc'],file_details:[{name:'a.trc',time:new Date().toISOString(),time_kind:'modified',size_bytes:3}]}));
+  if (req.url.startsWith('/api/logs?')) return res.end(JSON.stringify({content:'abc',truncated:false,updated_at:new Date().toISOString()}));
   if (req.url === '/api/overview') data = {pods: [], deployments: [{name: 'fnhttpac', desired: 1, ready: 1,
     restart: {allowed: restartAllowed, reason: restartAllowed ? 'Stable' : 'Cooldown 120 сек', cooldown_seconds: restartAllowed ? 0 : 120}}], updated_at: new Date().toISOString()};
   else if (req.url === '/api/log-control') data = {configmaps: [{name: tracking.configmap, group: 'FNHTTP'}, {name: 'fnhttp-la-env', group: 'FNHTTP'}, {name: 'fip-env', group: 'FIP'}, {name: 'fnhttp-py-env', group: 'FNHTTP'}]};
@@ -106,10 +127,41 @@ async function main() {
   await waitFor("document.querySelector('#bulk-message').textContent.includes('ZIP mock read failure')");
   assert.equal(await evaluate("document.querySelector('#bulk-message').classList.contains('error')"), true);
   assert.equal(await evaluate("document.querySelector('#download-selected').disabled"), false);
-  const zipRequests = requests.filter(url => url.startsWith('/api/logs/download?')).length;
-  await evaluate("renderFileChoices(Array.from({length:341}, (_,i) => ({name:'log'+i}))); document.querySelector('#files-all').click(); document.querySelector('#download-selected').click()");
-  assert.ok(await evaluate("document.querySelector('#bulk-message').textContent.includes('341 файл') && document.querySelector('#bulk-message').textContent.includes('эхлээгүй')"));
-  assert.equal(requests.filter(url => url.startsWith('/api/logs/download?')).length, zipRequests);
+  zipMode = 'success'; zipBodies.length = 0;
+  await evaluate("window.zipNames = []; const originalClick = HTMLAnchorElement.prototype.click; HTMLAnchorElement.prototype.click = function() { if (this.download) window.zipNames.push(this.download); else originalClick.call(this); }; renderFileChoices(Array.from({length:951}, (_,i) => ({name:'log'+i}))); document.querySelector('#files-all').click(); document.querySelector('#download-selected').click()");
+  await waitFor("document.querySelector('#bulk-message').classList.contains('success')");
+  assert.deepEqual(zipBodies.map(body => body.files.length), [100,100,100,100,100,100,100,100,100,51]);
+  assert.equal(new Set(zipBodies.flatMap(body => body.files)).size, 951);
+  assert.equal(await evaluate('window.zipNames.length'), 10);
+  assert.ok(await evaluate("window.zipNames[0].includes('part-001-of-010') && window.zipNames[9].includes('part-010-of-010')"));
+  assert.equal(await evaluate("document.querySelectorAll('#batch-downloads a').length"), 10);
+  zipBodies.length = 0; failZipBatch = 2;
+  await evaluate("document.querySelector('#download-selected').click()");
+  await waitFor("document.querySelector('#bulk-message').classList.contains('error')");
+  assert.equal(zipBodies.length, 2);
+  assert.equal(await evaluate("document.querySelectorAll('#batch-downloads a').length"), 1);
+  assert.ok(await evaluate("document.querySelector('#bulk-message').textContent.includes('2/10')"));
+  zipMode = 'html'; failZipBatch = 0;
+  await evaluate("document.querySelector('#download-selected').click()");
+  await waitFor("document.querySelector('#bulk-message').textContent.includes('HTTP 504')");
+  assert.ok(await evaluate("document.querySelector('#bulk-message').textContent.includes('Route/proxy')"));
+  assert.equal(await evaluate("document.querySelector('#bulk-message').textContent.includes('Unexpected token')"), false);
+
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('#file-checkboxes label')).display"), 'flex');
+  assert.ok(await evaluate("document.querySelector('#file-checkboxes').scrollHeight > document.querySelector('#file-checkboxes').clientHeight"));
+  assert.ok(await evaluate("document.querySelector('#file-checkboxes').getBoundingClientRect().height <= 282"));
+  assert.ok(await evaluate("document.querySelectorAll('#file-checkboxes label')[1].getBoundingClientRect().top > document.querySelectorAll('#file-checkboxes label')[0].getBoundingClientRect().top"));
+  await call('Emulation.setDeviceMetricsOverride', {width:390,height:844,deviceScaleFactor:1,mobile:true});
+  await evaluate("renderFileChoices([{name:'long_filename_'.repeat(30)+'.trc'}])");
+  assert.equal(await evaluate('document.documentElement.scrollWidth <= window.innerWidth'), true);
+  await call('Emulation.clearDeviceMetricsOverride');
+
+  await evaluate("podList = [{name:'fnhttpac-pod',source:'fnhttp',fnhttp_service:'ac',healthy:true,containers:['fnhttpac']}]; document.querySelector('[data-source=fnhttp]').click()");
+  await waitFor("document.querySelector('#fnhttp-folder').options.length === 4 && document.querySelector('#file').value === 'a.trc'");
+  await evaluate("document.querySelector('#file-checkboxes input').click(); document.querySelector('#fnhttp-folder').value='REPORTS'; document.querySelector('#fnhttp-folder').dispatchEvent(new Event('change'))");
+  await waitFor("document.querySelector('#log-path').textContent.includes('/REPORTS/a.trc') && document.querySelector('#log-state').textContent.includes('Авто шинэчлэлт')");
+  assert.equal(await evaluate('selectedFiles.size'), 0);
+  assert.ok(requests.some(url => url.startsWith('/api/log-files?') && url.includes('folder=REPORTS')));
   await evaluate("history.back()");
   await waitFor("document.querySelector('[aria-current=page]').dataset.page === 'overview'");
   await evaluate('history.back()'); await waitFor("document.querySelector('[aria-current=page]').dataset.page === 'deployments'");
@@ -178,8 +230,8 @@ async function main() {
   assert.equal(await evaluate("getComputedStyle(document.querySelector('[data-page=control]')).display"), 'block');
   assert.equal(await evaluate('document.documentElement.scrollWidth <= window.innerWidth'), true);
   assert.deepEqual(errors, []);
-  assert.ok(!requests.some(url => url.startsWith('/api/logs?')));
-  console.log('PASS: screens, history, mobile, 5-second restart gate, current values, confirmed reset-all, namespace switching, ZIP loading/error feedback, file-count validation and rollout (mock APIs only).');
+  assert.ok(requests.some(url => url.startsWith('/api/logs?') && url.includes('folder=REPORTS')));
+  console.log('PASS: screens, history, mobile, 5-second restart gate, current values, confirmed reset-all, namespace switching, ZIP loading/error feedback, 100-file batching and partial failure and rollout (mock APIs only).');
 }
 function call(method, params = {}) {
   return new Promise((resolve, reject) => {

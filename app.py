@@ -45,6 +45,7 @@ SOURCES = {
     'fnbrnmpy': {'path': '/usr/local/finacle/fe/common/log/finint/fcoremb',
                 'files': ['ciErrorLog.log', 'instrumentationLog.log']},
 }
+FNHTTP_LOG_ROOT = '/usr/local/finacle/be/CDCI_LOGS'
 MAX_BYTES = 262144
 FNHTTP_CONFIGS = {'fnhttp-ac-env', 'fnhttp-la-env', 'fnhttp-py-env', 'fnhttp-rof-env'}
 LOG_KEYS = ('FINACLE_LOG4FIN_ENABLED', 'DEBUG_LOG_USERS', 'DEBUG_LOG_LEVEL',
@@ -193,10 +194,10 @@ def restart_blocked(error):
     return jsonify(message=str(error)), 409
 
 
-def oc_bytes(*args):
+def oc_bytes(*args, timeout=20):
     try:
         result = subprocess.run(['oc', '-n', current_namespace(), '--request-timeout=15s', *args],
-                                capture_output=True, timeout=20, check=False)
+                                capture_output=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired as exc:
         raise ClusterError('Cluster хариу өгөх хугацаа хэтэрлээ. Дахин оролдоно уу.') from exc
     except OSError as exc:
@@ -304,6 +305,13 @@ def valid_log_filename(name):
             and not any(c in '/\\' or ord(c) < 32 or ord(c) == 127 for c in name))
 
 
+def log_directory(source):
+    if source != 'fnhttp':
+        return SOURCES[source]['path']
+    folder = request.args.get('folder', 'FIVUSR')
+    return FNHTTP_LOG_ROOT + '/' + folder if valid_log_filename(folder) else None
+
+
 def log_container(pod):
     if pod['source'] == 'fnhttp':
         expected = 'fnhttp' + (pod.get('fnhttp_service') or '')
@@ -321,8 +329,8 @@ def selected_log_pod(source):
     return candidates[0] if candidates else None
 
 
-@app.get('/api/log-files')
-def log_files():
+@app.get('/api/log-folders')
+def log_folders():
     if request.args.get('source') != 'fnhttp':
         return jsonify(message='Log эх үүсвэр буруу байна.'), 400
     pod = selected_log_pod('fnhttp')
@@ -333,12 +341,36 @@ def log_files():
     container = log_container(pod)
     if container not in pod['containers']:
         return jsonify(message='Container сонголт буруу байна.'), 400
+    output = oc('exec', pod['name'], '-c', container, '--', 'sh', '-c',
+                'if [ -d "$1" ]; then find "$1" -mindepth 1 -maxdepth 1 -type d -print0; fi',
+                'list-log-folders', FNHTTP_LOG_ROOT)
+    prefix = FNHTTP_LOG_ROOT + '/'
+    folders = sorted({path[len(prefix):] for path in output.split('\0')
+                      if path.startswith(prefix) and valid_log_filename(path[len(prefix):])})
+    return jsonify(folders=folders, path=FNHTTP_LOG_ROOT, pod=pod['name'], container=container)
+
+
+@app.get('/api/log-files')
+def log_files():
+    if request.args.get('source') != 'fnhttp':
+        return jsonify(message='Log эх үүсвэр буруу байна.'), 400
+    directory = log_directory('fnhttp')
+    if directory is None:
+        return jsonify(message='Хавтасны сонголт буруу байна.'), 400
+    pod = selected_log_pod('fnhttp')
+    if not pod:
+        return jsonify(message='FNHTTP deployment-ийн pod олдсонгүй.'), 404
+    if pod['phase'] != 'Running':
+        return jsonify(message='Сонгосон pod ажиллаж эхлээгүй байна.'), 409
+    container = log_container(pod)
+    if container not in pod['containers']:
+        return jsonify(message='Container сонголт буруу байна.'), 400
     # The script is constant; the directory is passed as an argument, never interpolated.
     output = oc('exec', pod['name'], '-c', container, '--', 'sh', '-c',
-                'if [ -d "$1" ]; then find "$1" -maxdepth 1 -type f '
+                'if [ -d "$1" ] && [ ! -L "$1" ]; then find "$1" -maxdepth 1 -type f '
                 "-exec stat --printf='%W\\0%Y\\0%s\\0%n\\0' -- {} +; fi",
-                'list-logs', SOURCES['fnhttp']['path'])
-    prefix = SOURCES['fnhttp']['path'] + '/'
+                'list-logs', directory)
+    prefix = directory + '/'
     entries = output.split('\0')
     if entries[-1] == '':
         entries.pop()
@@ -377,6 +409,9 @@ def download_log_files():
     names = list(dict.fromkeys(names))
     if source != 'fnhttp' and any(name not in SOURCES[source]['files'] for name in names):
         return jsonify(message='Файлын сонголт зөвшөөрөгдөөгүй.'), 400
+    directory = log_directory(source)
+    if directory is None:
+        return jsonify(message='Хавтасны сонголт буруу байна.'), 400
     pod = selected_log_pod(source)
     if not pod:
         return jsonify(message='Pod олдсонгүй.'), 404
@@ -385,19 +420,44 @@ def download_log_files():
     container = log_container(pod)
     if container not in pod['containers']:
         return jsonify(message='Container сонголт буруу байна.'), 400
+    # One exec per batch. Each record is an ASCII byte count, NUL, then raw bytes.
+    # Filenames are argv parameters, never interpolated into shell code.
+    script = (
+        'set -eu; directory="$1"; shift; test ! -L "$directory"; remaining=100000000; '
+        'for name do path="$directory/$name"; '
+        'if [ ! -f "$path" ] || [ -L "$path" ]; then echo "File unavailable" >&2; exit 1; fi; '
+        'size=$(stat -c %s -- "$path"); '
+        'if [ "$size" -gt "$remaining" ]; then echo FINACLE_ZIP_SIZE_LIMIT >&2; exit 42; fi; '
+        'remaining=$((remaining-size)); '
+        "printf '%s\\0' \"$size\"; "
+        'head -c "$size" -- "$path"; done'
+    )
+    try:
+        data = oc_bytes('exec', pod['name'], '-c', container, '--', 'sh', '-c',
+                        script, 'download-logs', directory, *names, timeout=120)
+    except ClusterError as exc:
+        if 'FINACLE_ZIP_SIZE_LIMIT' in str(exc):
+            return jsonify(message='Сонгосон багцын нийт хэмжээ 100 MB-аас хэтэрсэн байна. Цөөн файл сонгоно уу.'), 413
+        raise
     archive = io.BytesIO()
-    remaining = 100 * 1000000
+    offset, remaining = 0, 100000000
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
         for name in names:
-            path = SOURCES[source]['path'] + '/' + name
-            # Reject symlinks/non-files. Bound the read without truncating a successful download.
-            data = oc_bytes('exec', pod['name'], '-c', container, '--', 'sh', '-c',
-                            'test -f "$1" && test ! -L "$1" && head -c "$2" -- "$1"',
-                            'download-log', path, str(remaining + 1))
-            if len(data) > remaining:
-                return jsonify(message='Сонгосон файлуудын нийт хэмжээ 100 MB-аас хэтэрсэн байна. Цөөн файл сонгоно уу.'), 413
-            remaining -= len(data)
-            bundle.writestr(name, data)
+            end = data.find(b'\0', offset, offset + 22)
+            header = data[offset:end] if end >= 0 else b''
+            if not header or not header.isdigit():
+                raise ClusterError('Багцын файлын өгөгдөл дутуу эсвэл буруу байна. Дахин оролдоно уу.')
+            size = int(header)
+            if size > remaining:
+                return jsonify(message='Сонгосон багцын нийт хэмжээ 100 MB-аас хэтэрсэн байна.'), 413
+            offset = end + 1
+            if offset + size > len(data):
+                raise ClusterError('Файл унших явцад өөрчлөгдсөн эсвэл өгөгдөл дутуу байна. Дахин оролдоно уу.')
+            bundle.writestr(name, data[offset:offset + size])
+            offset += size
+            remaining -= size
+    if offset != len(data):
+        raise ClusterError('Багцын файлын өгөгдөл буруу байна. Дахин оролдоно уу.')
     archive.seek(0)
     return send_file(archive, mimetype='application/zip', as_attachment=True,
                      download_name=f"{pod['name']}-logs.zip")
@@ -414,6 +474,9 @@ def file_logs():
             raise ValueError()
     except ValueError:
         return jsonify(message='Мөрийн тоо 1–2000 хооронд байна.'), 400
+    directory = log_directory(source)
+    if directory is None:
+        return jsonify(message='Хавтасны сонголт буруу байна.'), 400
     pod = selected_log_pod(source)
     if not pod:
         return jsonify(message=f'{source} pod олдсонгүй. Pod жагсаалтыг шинэчилнэ үү.'), 404
@@ -422,10 +485,15 @@ def file_logs():
     container = log_container(pod)
     if container not in pod['containers']:
         return jsonify(message='Container сонголт буруу байна.'), 400
-    path = SOURCES[source]['path'] + '/' + filename
+    path = directory + '/' + filename
     # Fixed allowlist and argv execution: no shell, arbitrary paths or commands.
     try:
-        content = oc('exec', pod['name'], '-c', container, '--', 'tail', '-c', str(MAX_BYTES), '--', path)
+        if source == 'fnhttp':
+            content = oc('exec', pod['name'], '-c', container, '--', 'sh', '-c',
+                         'test ! -L "$1" && test ! -L "$2" && tail -c 262144 -- "$2"',
+                         'read-log', directory, path)
+        else:
+            content = oc('exec', pod['name'], '-c', container, '--', 'tail', '-c', str(MAX_BYTES), '--', path)
     except ClusterError as exc:
         if source == 'fnhttp' and 'No such file or directory' in str(exc):
             return jsonify(message='Энэ pod/container дотор сонгосон log файл байхгүй байна.'), 404
