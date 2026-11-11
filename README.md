@@ -9,6 +9,8 @@ Flask dashboard for `pre-uat-finacle` and `uat-finacle`. Select the project in t
 | `fip`, `fip-*` | `/usr/local/finacle/fe/common/log/fsb/fsbhttp` | `ciErrorLog.log`, `ciDebugLog.log`, `instrumentationLog.log` |
 | `fnbrnmpy`, `fnbrnmpy-*` | `/usr/local/finacle/fe/common/log/finint/fcoremb` | `ciErrorLog.log`, `instrumentationLog.log` |
 
+FNHTTP logs are discovered per selected pod/container in `/usr/local/finacle/be/CDCI_LOGS/FIVUSR` (all direct regular files, including `.stdout`, `.trc`, `.log` and files without extensions). The file picker shows file sizes after each filename in MB (1 MB = 1,000,000 bytes, two decimal places). It shows timestamps in Asia/Ulaanbaatar time and sorts newest first by filesystem birth time (`stat %W`); if unavailable, it uses modification time (`%Y`) and labels it accordingly. Equal timestamps sort by filename. Automatic refresh preserves the selected file. Only pods owned through ReplicaSets by deployments starting with `fnhttp` are eligible; restart Job pods are excluded. A missing directory or no matching files shows a normal empty state and is checked again on refresh. Select ac, la, py or rf, then a matching replica and file. FNHTTP reads only the corresponding fnhttpac, fnhttpla, fnhttppy or fnhttprf application container; sidecars cannot be selected.
+
 The dashboard discovers actual pod names after rollouts. Select a replica and container if more than one is available. The default is a ready pod and its first container; choose the Finacle container when a sidecar comes first.
 
 Log monitoring refreshes a bounded snapshot every 5 seconds (not a continuous `tail -f` stream). Each read executes `oc -n SELECTED_NAMESPACE exec POD -c CONTAINER -- tail -c 262144 -- ALLOWED_PATH` and returns the requested last 1–2000 lines. Busy files can produce more output between refreshes than the snapshot retains. Search filters the loaded snapshot; download saves that snapshot without the search filter. Empty files and cluster/read errors have separate states. Pod and restart eligibility status refresh every 5 seconds.
@@ -151,29 +153,3 @@ without connecting to the cluster.
 For local development, install `requirements.txt`, authenticate `oc` to the intended cluster, then run `python app.py`. `/health` checks the web process; `/api/overview` checks cluster access. A failure to read deployments does not hide available pod information.
 
 After deployment, confirm both source tabs show the intended pods, select the correct application container, and open each of the five files. A permission or missing-file error is displayed in the log panel. Use a controlled environment to validate the optional restart action.
-
-## LDAP login setup
-
-Set these entries in `manifests/deploy.yaml` manually before deployment:
-
-- `LDAP_URL`: `ldaps://dc.example.com:636` or `ldap://dc.example.com:389` (StartTLS when LDAP_INSECURE=false).
-- `LDAP_USER_DN_TEMPLATE` (direct-bind mode only): AD UPN: `{username}@example.com`; OpenLDAP: `uid={username},ou=People,dc=example,dc=com`.
-- `SECRET_KEY`: referenced from the `finacle-support-auth` Secret; create it before applying the Deployment. Generate a random value using `python -c "import secrets; print(secrets.token_hex(32))"`, then create the Secret securely with key `SECRET_KEY`. Use the same value across workers/replicas. Never commit it.
-- `SESSION_COOKIE_SECURE`: keep `true` behind HTTPS. Only for local HTTP/port-forward testing set `false`.
-- Optional `LDAP_CA_CERT_FILE`: absolute PEM CA bundle path for your private LDAP CA. Mount the CA using a ConfigMap/Secret volume and add this environment variable. Certificate and hostname verification are enabled when LDAP_INSECURE=false.
-
-Login supports direct bind and search-and-bind. The deployment uses search-and-bind: set LDAP_BASE_DN, LDAP_USERNAME_ATTRIBUTE, LDAP_BIND_DN and LDAP_BIND_PASSWORD. LDAP_BIND_PASSWORD references key bindPassword in the my-ldap-bind-password Secret in pre-uat-finacle. Create that Secret in this namespace; a Secret in openshift-config is not accessible to this Deployment. With LDAP_BASE_DN set, LDAP_USER_DN_TEMPLATE is unused. LDAP_INSECURE=true matches the supplied OpenShift insecure setting and disables StartTLS for ldap:// (and certificate validation for ldaps://); use false for verified TLS. Search must return exactly one entry, then its DN is bound with the submitted password. No OpenShift OAuth attributes or mappingMethod settings are needed for this application. Enter only the username part expected by your template. Users in different OUs require an appropriate shared login identity such as AD UPN. All LDAP accounts that successfully bind receive the existing dashboard permissions; restrict access through your directory/access proxy if needed. Configure login request rate limiting at your internal ingress.
-
-Unauthenticated dashboard/log pages redirect to `/login`; APIs/restart return 401. Login and logout require a CSRF token. Sessions expire eight hours after login and contain only the username and CSRF token, never the LDAP password. `/health` stays public for probes. Missing configuration blocks login. No live LDAP connection is needed for unit tests.
-
-For local PowerShell development:
-
-```powershell
-$env:LDAP_URL = 'ldaps://dc.example.com:636'
-$env:LDAP_USER_DN_TEMPLATE = '{username}@example.com'
-$env:SECRET_KEY = (python -c "import secrets; print(secrets.token_hex(32))")
-$env:SESSION_COOKIE_SECURE = 'false'
-python app.py
-```
-
-Rebuild the container after installing the updated requirements and deploy using a new image tag. LDAP credentials must be checked against your real directory after you supply the settings.

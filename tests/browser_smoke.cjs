@@ -29,6 +29,10 @@ const server = http.createServer((req, res) => {
   }
   res.setHeader('Content-Type', 'application/json');
   let data;
+  if (req.url.startsWith('/api/logs/download?')) {
+    res.statusCode = 500;
+    return setTimeout(() => res.end(JSON.stringify({message: 'ZIP mock read failure'})), 1600);
+  }
   if (req.url === '/api/overview') data = {pods: [], deployments: [{name: 'fnhttpac', desired: 1, ready: 1,
     restart: {allowed: restartAllowed, reason: restartAllowed ? 'Stable' : 'Cooldown 120 сек', cooldown_seconds: restartAllowed ? 0 : 120}}], updated_at: new Date().toISOString()};
   else if (req.url === '/api/log-control') data = {configmaps: [{name: tracking.configmap, group: 'FNHTTP'}, {name: 'fnhttp-la-env', group: 'FNHTTP'}, {name: 'fip-env', group: 'FIP'}, {name: 'fnhttp-py-env', group: 'FNHTTP'}]};
@@ -94,6 +98,20 @@ async function main() {
     assert.equal(await evaluate('window.scrollY'), 0);
     assert.equal(await evaluate("document.querySelector('[aria-current=page]').dataset.page"), page);
   }
+  await evaluate("document.querySelector('[data-page=logs]').click(); renderFileChoices([{name:'test.stdout'}]); document.querySelector('#file-checkboxes input').click(); document.querySelector('#download-selected').click()");
+  assert.equal(await evaluate("document.querySelector('#download-selected').disabled"), true);
+  assert.equal(await evaluate("document.querySelector('#download-selected').getAttribute('aria-busy')"), 'true');
+  assert.equal(await evaluate("document.querySelector('#bulk-message').hidden"), false);
+  assert.ok(await evaluate("document.querySelector('#bulk-message').textContent.includes('ZIP бэлтгэж байна')"));
+  await waitFor("document.querySelector('#bulk-message').textContent.includes('ZIP mock read failure')");
+  assert.equal(await evaluate("document.querySelector('#bulk-message').classList.contains('error')"), true);
+  assert.equal(await evaluate("document.querySelector('#download-selected').disabled"), false);
+  const zipRequests = requests.filter(url => url.startsWith('/api/logs/download?')).length;
+  await evaluate("renderFileChoices(Array.from({length:341}, (_,i) => ({name:'log'+i}))); document.querySelector('#files-all').click(); document.querySelector('#download-selected').click()");
+  assert.ok(await evaluate("document.querySelector('#bulk-message').textContent.includes('341 файл') && document.querySelector('#bulk-message').textContent.includes('эхлээгүй')"));
+  assert.equal(requests.filter(url => url.startsWith('/api/logs/download?')).length, zipRequests);
+  await evaluate("history.back()");
+  await waitFor("document.querySelector('[aria-current=page]').dataset.page === 'overview'");
   await evaluate('history.back()'); await waitFor("document.querySelector('[aria-current=page]').dataset.page === 'deployments'");
   await evaluate('history.forward()'); await waitFor("document.querySelector('[aria-current=page]').dataset.page === 'overview'");
   await evaluate("document.querySelector('[data-page=deployments]').click()");
@@ -160,8 +178,8 @@ async function main() {
   assert.equal(await evaluate("getComputedStyle(document.querySelector('[data-page=control]')).display"), 'block');
   assert.equal(await evaluate('document.documentElement.scrollWidth <= window.innerWidth'), true);
   assert.deepEqual(errors, []);
-  assert.ok(!requests.some(url => url.startsWith('/api/logs')));
-  console.log('PASS: screens, history, mobile, 5-second restart gate, current values, confirmed reset-all, namespace switching and rollout (mock APIs only).');
+  assert.ok(!requests.some(url => url.startsWith('/api/logs?')));
+  console.log('PASS: screens, history, mobile, 5-second restart gate, current values, confirmed reset-all, namespace switching, ZIP loading/error feedback, file-count validation and rollout (mock APIs only).');
 }
 function call(method, params = {}) {
   return new Promise((resolve, reject) => {

@@ -1,11 +1,14 @@
-﻿from flask import Flask, render_template, request, jsonify, Response
+﻿from flask import Flask, render_template, request, jsonify, Response, send_file
 import json
 from flask import g, has_request_context
 from restart_guard import eligibility
 import hashlib
+import io
+import zipfile
 import os
 import re
 import subprocess
+from urllib.parse import quote
 from datetime import datetime, timezone
 
 from authentication import init_auth
@@ -36,6 +39,7 @@ def select_namespace():
         return jsonify(message='Project-ийг тодорхой сонгоно уу.'), 400
     g.namespace = selected
 SOURCES = {
+    'fnhttp': {'path': '/usr/local/finacle/be/CDCI_LOGS/FIVUSR', 'files': [], 'dynamic': True},
     'fip': {'path': '/usr/local/finacle/fe/common/log/fsb/fsbhttp',
             'files': ['ciErrorLog.log', 'ciDebugLog.log', 'instrumentationLog.log']},
     'fnbrnmpy': {'path': '/usr/local/finacle/fe/common/log/finint/fcoremb',
@@ -189,7 +193,7 @@ def restart_blocked(error):
     return jsonify(message=str(error)), 409
 
 
-def oc(*args):
+def oc_bytes(*args):
     try:
         result = subprocess.run(['oc', '-n', current_namespace(), '--request-timeout=15s', *args],
                                 capture_output=True, timeout=20, check=False)
@@ -202,7 +206,11 @@ def oc(*args):
         error = result.stderr.decode('utf-8', errors='replace').strip()
         app.logger.warning('oc failed: %s', error)
         raise ClusterError(error[:2000] or 'OpenShift хүсэлт амжилтгүй боллоо.')
-    return result.stdout.decode('utf-8', errors='replace')
+    return result.stdout
+
+
+def oc(*args):
+    return oc_bytes(*args).decode('utf-8', errors='replace')
 
 
 def resources(kind):
@@ -213,19 +221,35 @@ def resources(kind):
 
 
 def source_for(name):
-    return next((key for key in SOURCES if name == key or name.startswith(key + '-')), None)
+    return next((key for key in SOURCES if key != 'fnhttp' and (name == key or name.startswith(key + '-'))), None)
 
 
 def pods(items=None):
     result = []
-    for pod in items if items is not None else resources('pods'):
+    items = items if items is not None else resources('pods')
+    fnhttp_owners = set()
+    if any(p['metadata']['name'].startswith('fnhttp') for p in items):
+        deployment_uids = {d['metadata']['uid'] for d in resources('deployments')
+                           if d['metadata']['name'].startswith('fnhttp')}
+        fnhttp_owners = {r['metadata']['uid'] for r in resources('replicasets')
+                         if any(o.get('controller') and o.get('kind') == 'Deployment'
+                                and o.get('uid') in deployment_uids
+                                for o in r['metadata'].get('ownerReferences', []))}
+    for pod in items:
         meta, spec, status = pod['metadata'], pod['spec'], pod.get('status', {})
         statuses = status.get('containerStatuses', [])
         containers = [item['name'] for item in spec.get('containers', [])]
         ready = sum(bool(item.get('ready')) for item in statuses)
         phase = status.get('phase', 'Unknown')
         terminating = bool(meta.get('deletionTimestamp'))
-        result.append({'name': meta['name'], 'source': source_for(meta['name']),
+        source = source_for(meta['name'])
+        if meta['name'].startswith('fnhttp') and any(
+                o.get('controller') and o.get('kind') == 'ReplicaSet' and o.get('uid') in fnhttp_owners
+                for o in meta.get('ownerReferences', [])):
+            source = 'fnhttp'
+        result.append({'name': meta['name'], 'source': source,
+                       'fnhttp_service': next((key for key in ('ac', 'la', 'py', 'rf')
+                                                if meta['name'].startswith('fnhttp' + key + '-')), None) if source == 'fnhttp' else None,
                        'containers': containers, 'ready': ready, 'total': len(containers),
                        'healthy': phase == 'Running' and ready == len(containers) and not terminating,
                        'phase': 'Terminating' if terminating else phase,
@@ -275,10 +299,114 @@ def overview():
                    warning=warning, updated_at=datetime.now(timezone.utc).isoformat())
 
 
+def valid_log_filename(name):
+    return (isinstance(name, str) and 0 < len(name) <= 255 and name not in ('.', '..')
+            and not any(c in '/\\' or ord(c) < 32 or ord(c) == 127 for c in name))
+
+
+def log_container(pod):
+    if pod['source'] == 'fnhttp':
+        expected = 'fnhttp' + (pod.get('fnhttp_service') or '')
+        requested = request.args.get('container')
+        return expected if not requested or requested == expected else None
+    return request.args.get('container') or pod['containers'][0]
+
+
+def selected_log_pod(source):
+    candidates = [p for p in pods() if p['source'] == source
+                  and (not request.args.get('pod') or p['name'] == request.args['pod'])
+                  and (source != 'fnhttp' or not request.args.get('service')
+                       or p.get('fnhttp_service') == request.args['service'])]
+    candidates.sort(key=lambda p: (not p['healthy'], p['name']))
+    return candidates[0] if candidates else None
+
+
+@app.get('/api/log-files')
+def log_files():
+    if request.args.get('source') != 'fnhttp':
+        return jsonify(message='Log эх үүсвэр буруу байна.'), 400
+    pod = selected_log_pod('fnhttp')
+    if not pod:
+        return jsonify(message='FNHTTP deployment-ийн pod олдсонгүй.'), 404
+    if pod['phase'] != 'Running':
+        return jsonify(message='Сонгосон pod ажиллаж эхлээгүй байна.'), 409
+    container = log_container(pod)
+    if container not in pod['containers']:
+        return jsonify(message='Container сонголт буруу байна.'), 400
+    # The script is constant; the directory is passed as an argument, never interpolated.
+    output = oc('exec', pod['name'], '-c', container, '--', 'sh', '-c',
+                'if [ -d "$1" ]; then find "$1" -maxdepth 1 -type f '
+                "-exec stat --printf='%W\\0%Y\\0%s\\0%n\\0' -- {} +; fi",
+                'list-logs', SOURCES['fnhttp']['path'])
+    prefix = SOURCES['fnhttp']['path'] + '/'
+    entries = output.split('\0')
+    if entries[-1] == '':
+        entries.pop()
+    if len(entries) % 4:
+        raise ClusterError('Файлын цагийн мэдээллийг уншиж чадсангүй.')
+    details = []
+    for index in range(0, len(entries), 4):
+        birth, modified, size, path = entries[index:index + 4]
+        if not path.startswith(prefix) or not valid_log_filename(path[len(prefix):]):
+            continue
+        try:
+            birth, modified, size = int(birth), int(modified), int(size)
+            if size < 0:
+                raise ValueError('negative file size')
+            timestamp = birth if birth > 0 else modified
+            display_time = datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+        except (ValueError, OverflowError, OSError) as exc:
+            raise ClusterError('Файлын цагийн мэдээлэл буруу байна.') from exc
+        details.append({'name': path[len(prefix):], 'size_bytes': size, 'timestamp': timestamp,
+                        'time': display_time, 'time_kind': 'created' if birth > 0 else 'modified'})
+    details.sort(key=lambda item: (-item['timestamp'], item['name']))
+    return jsonify(files=[item['name'] for item in details], file_details=details,
+                   pod=pod['name'], container=container)
+
+
+@app.post('/api/logs/download')
+def download_log_files():
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or request.headers.get('X-Requested-With') != 'FinacleSupport':
+        return jsonify(message='Хүсэлт зөвшөөрөгдөөгүй.'), 400
+    source = request.args.get('source')
+    names = body.get('files')
+    if (source not in SOURCES or not isinstance(names, list) or not 1 <= len(names) <= 100
+            or any(not valid_log_filename(name) for name in names)):
+        return jsonify(message='1–100 файл сонгоно уу.'), 400
+    names = list(dict.fromkeys(names))
+    if source != 'fnhttp' and any(name not in SOURCES[source]['files'] for name in names):
+        return jsonify(message='Файлын сонголт зөвшөөрөгдөөгүй.'), 400
+    pod = selected_log_pod(source)
+    if not pod:
+        return jsonify(message='Pod олдсонгүй.'), 404
+    if pod['phase'] != 'Running':
+        return jsonify(message='Сонгосон pod ажиллаж эхлээгүй байна.'), 409
+    container = log_container(pod)
+    if container not in pod['containers']:
+        return jsonify(message='Container сонголт буруу байна.'), 400
+    archive = io.BytesIO()
+    remaining = 100 * 1000000
+    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
+        for name in names:
+            path = SOURCES[source]['path'] + '/' + name
+            # Reject symlinks/non-files. Bound the read without truncating a successful download.
+            data = oc_bytes('exec', pod['name'], '-c', container, '--', 'sh', '-c',
+                            'test -f "$1" && test ! -L "$1" && head -c "$2" -- "$1"',
+                            'download-log', path, str(remaining + 1))
+            if len(data) > remaining:
+                return jsonify(message='Сонгосон файлуудын нийт хэмжээ 100 MB-аас хэтэрсэн байна. Цөөн файл сонгоно уу.'), 413
+            remaining -= len(data)
+            bundle.writestr(name, data)
+    archive.seek(0)
+    return send_file(archive, mimetype='application/zip', as_attachment=True,
+                     download_name=f"{pod['name']}-logs.zip")
+
+
 @app.get('/api/logs')
 def file_logs():
     source, filename = request.args.get('source'), request.args.get('file')
-    if source not in SOURCES or filename not in SOURCES[source]['files']:
+    if source not in SOURCES or not (valid_log_filename(filename) if source == 'fnhttp' else filename in SOURCES[source]['files']):
         return jsonify(message='Зөвшөөрөгдсөн log файл сонгоно уу.'), 400
     try:
         lines = int(request.args.get('lines', '500'))
@@ -286,29 +414,29 @@ def file_logs():
             raise ValueError()
     except ValueError:
         return jsonify(message='Мөрийн тоо 1–2000 хооронд байна.'), 400
-    candidates = [pod for pod in pods() if pod['source'] == source]
-    requested = request.args.get('pod')
-    if requested:
-        candidates = [pod for pod in candidates if pod['name'] == requested]
-    candidates.sort(key=lambda item: (not item['healthy'], item['name']))
-    if not candidates:
+    pod = selected_log_pod(source)
+    if not pod:
         return jsonify(message=f'{source} pod олдсонгүй. Pod жагсаалтыг шинэчилнэ үү.'), 404
-    pod = candidates[0]
     if pod['phase'] != 'Running':
         return jsonify(message='Сонгосон pod ажиллаж эхлээгүй байна.'), 409
-    container = request.args.get('container') or pod['containers'][0]
+    container = log_container(pod)
     if container not in pod['containers']:
         return jsonify(message='Container сонголт буруу байна.'), 400
     path = SOURCES[source]['path'] + '/' + filename
     # Fixed allowlist and argv execution: no shell, arbitrary paths or commands.
-    content = oc('exec', pod['name'], '-c', container, '--', 'tail', '-c', str(MAX_BYTES), '--', path)
+    try:
+        content = oc('exec', pod['name'], '-c', container, '--', 'tail', '-c', str(MAX_BYTES), '--', path)
+    except ClusterError as exc:
+        if source == 'fnhttp' and 'No such file or directory' in str(exc):
+            return jsonify(message='Энэ pod/container дотор сонгосон log файл байхгүй байна.'), 404
+        raise
     truncated = len(content.encode('utf-8')) >= MAX_BYTES
     if truncated:
         content = content.partition('\n')[2]
     content = '\n'.join(content.splitlines()[-lines:])
     if request.args.get('download') == '1':
         return Response(content, mimetype='text/plain', headers={
-            'Content-Disposition': f'attachment; filename="{source}-{filename}"'})
+            'Content-Disposition': f"attachment; filename*=UTF-8''{quote(source + '-' + filename, safe='')}"})
     return jsonify(content=content, pod=pod['name'], container=container, path=path,
                    truncated=truncated, updated_at=datetime.now(timezone.utc).isoformat())
 

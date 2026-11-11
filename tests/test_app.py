@@ -1,4 +1,6 @@
 import json
+import io
+import zipfile
 import subprocess
 import unittest
 from unittest.mock import patch, Mock
@@ -42,6 +44,131 @@ class AppTests(unittest.TestCase):
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.json['content'], 'two\nthree')
                     self.assertEqual(execute.call_args.args[0][4:], ['exec', source + '-abc-1', '-c', 'sidecar', '--', 'tail', '-c', '262144', '--', config['path'] + '/' + filename])
+
+    def test_fnhttp_deployment_files_and_missing_directory(self):
+        deployment, item, rs = healthy_deployment('fnhttpac')
+        item['spec']['containers'] = [{'name': 'sidecar'}, {'name': 'fnhttpac'}]
+        job = pod('fnhttppy-restart-29905680-7nrxq')
+        job['metadata']['ownerReferences'] = [{'kind': 'Job', 'uid': 'job', 'controller': True}]
+        def resources(kind):
+            return {'pods': [item, job], 'deployments': [deployment], 'replicasets': [rs]}[kind]
+        with patch.object(module, 'resources', side_effect=resources):
+            result = module.pods()
+            self.assertEqual(result[0]['source'], 'fnhttp')
+            self.assertEqual(result[0]['fnhttp_service'], 'ac')
+            self.assertIsNone(result[1]['source'])
+            for output, expected in [('', []),
+                    ('100' + '\0' + '200' + '\0' + '1500000' + '\0' + module.SOURCES['fnhttp']['path'] + '/debug.log\0' + '100' + '\0' + '200' + '\0' + '1500000' + '\0/etc/secret.log\0', ['debug.log'])]:
+                with patch.object(module, 'oc', return_value=output):
+                    response = self.client.get('/api/log-files?source=fnhttp')
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json['files'], expected)
+            with patch.object(module, 'oc', return_value='last line') as execute:
+                response = self.client.get('/api/logs?source=fnhttp&file=debug.log')
+                self.assertEqual(response.json['content'], 'last line')
+                self.assertEqual(execute.call_args.args[3], 'fnhttpac')
+                self.assertEqual(execute.call_args.args[-1], module.SOURCES['fnhttp']['path'] + '/debug.log')
+            with patch.object(module, 'oc', side_effect=module.ClusterError('No such file or directory')):
+                self.assertEqual(self.client.get('/api/logs?source=fnhttp&file=debug.log').status_code, 404)
+            with patch.object(module, 'oc') as execute:
+                self.assertEqual(self.client.get('/api/logs?source=fnhttp&file=../../secret.log').status_code, 400)
+                self.assertEqual(self.client.get('/api/log-files?source=fnhttp&pod=' + job['metadata']['name']).status_code, 404)
+                self.assertEqual(self.client.get('/api/log-files?source=fnhttp&container=sidecar').status_code, 400)
+                self.assertEqual(self.client.get('/api/log-files?source=fnhttp&service=py').status_code, 404)
+                execute.assert_not_called()
+
+    def test_fnhttp_lists_and_reads_all_file_extensions(self):
+        deployment, item, rs = healthy_deployment('fnhttpac')
+        item['spec']['containers'] = [{'name': 'fnhttpac'}]
+        names = ['chkIfChnlEnbForInqAudit.scr_4383_1110.stdout',
+                 'chkIfChnlEnbForInqAudit.scr_4383_1110.trc',
+                 'no_extension', '.hidden', 'with spaces.stdout', 'debug.log']
+        directory = module.SOURCES['fnhttp']['path']
+        def resources(kind):
+            return {'pods': [item], 'deployments': [deployment], 'replicasets': [rs]}[kind]
+        with patch.object(module, 'resources', side_effect=resources):
+            listing = ''.join('100' + '\0' + '200' + '\0' + '1500000' + '\0' + directory + '/' + name + '\0' for name in names)
+            with patch.object(module, 'oc', return_value=listing) as execute:
+                response = self.client.get('/api/log-files?source=fnhttp')
+                self.assertEqual(response.json['files'], sorted(names))
+                self.assertNotIn('-name', execute.call_args.args[-3])
+            for name in names:
+                with self.subTest(filename=name), patch.object(module, 'oc', return_value='trace content') as execute:
+                    response = self.client.get('/api/logs', query_string={'source': 'fnhttp', 'file': name})
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.json['content'], 'trace content')
+                    self.assertEqual(execute.call_args.args[-1], directory + '/' + name)
+            for name in ['.', '..', '../secret', 'dir/file', 'dir\\file', 'bad\nname']:
+                with patch.object(module, 'oc') as execute:
+                    self.assertEqual(self.client.get('/api/logs', query_string={'source': 'fnhttp', 'file': name}).status_code, 400)
+                    execute.assert_not_called()
+
+    def test_fnhttp_files_sort_by_creation_time_with_modified_fallback(self):
+        directory = module.SOURCES['fnhttp']['path']
+        records = [('100', '900', 'old.stdout'), ('300', '400', 'new.trc'),
+                   ('0', '200', 'fallback'), ('-1', '50', 'unknown-birth')]
+        output = ''.join('\0'.join([birth, modified, '1500000', directory + '/' + name]) + '\0'
+                         for birth, modified, name in records)
+        selected = {'name': 'fnhttpac-pod', 'source': 'fnhttp', 'phase': 'Running',
+                    'fnhttp_service': 'ac', 'containers': ['fnhttpac']}
+        with patch.object(module, 'selected_log_pod', return_value=selected), patch.object(module, 'oc', return_value=output):
+            response = self.client.get('/api/log-files?source=fnhttp')
+        self.assertEqual(response.json['files'], ['new.trc', 'fallback', 'old.stdout', 'unknown-birth'])
+        details = response.json['file_details']
+        self.assertEqual(details[0]['time_kind'], 'created')
+        self.assertEqual(details[0]['size_bytes'], 1500000)
+        self.assertEqual(details[1]['time_kind'], 'modified')
+        self.assertEqual(details[1]['timestamp'], 200)
+        self.assertEqual(details[0]['time'], '1970-01-01T00:05:00+00:00')
+
+    def test_bulk_download_preserves_full_binary_files_in_zip(self):
+        selected = {'name': 'fnhttpac-pod', 'source': 'fnhttp', 'phase': 'Running',
+                    'fnhttp_service': 'ac', 'containers': ['fnhttpac', 'sidecar']}
+        payloads = [b'full file\x00\xff' + b'x' * (module.MAX_BYTES + 10), b'trace content']
+        with patch.object(module, 'selected_log_pod', return_value=selected), patch.object(module, 'oc_bytes', side_effect=payloads) as execute:
+            response = self.client.post('/api/logs/download?source=fnhttp&pod=fnhttpac-pod',
+                headers={'X-Requested-With': 'FinacleSupport'}, json={'files': ['test.stdout', 'test.trc']})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, 'application/zip')
+        with zipfile.ZipFile(io.BytesIO(response.data)) as archive:
+            self.assertEqual(archive.namelist(), ['test.stdout', 'test.trc'])
+            self.assertEqual(archive.read('test.stdout'), payloads[0])
+            self.assertEqual(archive.read('test.trc'), payloads[1])
+        self.assertEqual(execute.call_args_list[0].args[3], 'fnhttpac')
+        self.assertEqual(execute.call_args_list[0].args[-2], module.SOURCES['fnhttp']['path'] + '/test.stdout')
+        self.assertEqual(int(execute.call_args_list[1].args[-1]), 100000001 - len(payloads[0]))
+
+    def test_bulk_download_rejects_unsafe_and_invalid_selections(self):
+        with patch.object(module, 'oc_bytes') as execute:
+            for source, names in [('fnhttp', []), ('fnhttp', ['../secret']),
+                                  ('fnhttp', ['a'] * 101), ('fip', ['other']), ('unknown', ['a'])]:
+                response = self.client.post('/api/logs/download?source=' + source,
+                    headers={'X-Requested-With': 'FinacleSupport'}, json={'files': names})
+                self.assertEqual(response.status_code, 400)
+            execute.assert_not_called()
+        selected = {'name': 'fnhttpac-pod', 'source': 'fnhttp', 'phase': 'Running',
+                    'fnhttp_service': 'ac', 'containers': ['fnhttpac', 'sidecar']}
+        with patch.object(module, 'selected_log_pod', return_value=selected), patch.object(module, 'oc_bytes') as execute:
+            response = self.client.post('/api/logs/download?source=fnhttp&container=sidecar',
+                headers={'X-Requested-With': 'FinacleSupport'}, json={'files': ['test.trc']})
+            self.assertEqual(response.status_code, 400)
+            execute.assert_not_called()
+        with patch.object(module, 'selected_log_pod', return_value=selected), patch.object(module, 'oc_bytes', side_effect=module.ClusterError('missing file')):
+            response = self.client.post('/api/logs/download?source=fnhttp',
+                headers={'X-Requested-With': 'FinacleSupport'}, json={'files': ['missing.trc']})
+            self.assertEqual(response.status_code, 502)
+            self.assertEqual(response.mimetype, 'application/json')
+
+    def test_bulk_download_size_limit_returns_no_partial_zip(self):
+        selected = {'name': 'fnhttpac-pod', 'source': 'fnhttp', 'phase': 'Running',
+                    'fnhttp_service': 'ac', 'containers': ['fnhttpac']}
+        oversized = Mock()
+        oversized.__len__ = Mock(return_value=100000001)
+        with patch.object(module, 'selected_log_pod', return_value=selected), patch.object(module, 'oc_bytes', return_value=oversized):
+            response = self.client.post('/api/logs/download?source=fnhttp',
+                headers={'X-Requested-With': 'FinacleSupport'}, json={'files': ['large.trc']})
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(response.mimetype, 'application/json')
 
     def test_rejects_arbitrary_paths_and_invalid_lines_before_cluster(self):
         for query in [{'source': 'fip', 'file': '../../etc/passwd'},
