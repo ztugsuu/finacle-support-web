@@ -6,3 +6,4 @@ resources:
   - svc.yaml
   - rbac.yaml
   - rbac-uat.yaml
+  - route.yaml

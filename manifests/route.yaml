@@ -1,0 +1,15 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: finacle-support-web
+  namespace: pre-uat-finacle
+spec:
+  host: finacle-support-web-pre-uat-finacle.apps.testocp.mbank.local
+  to:
+    kind: Service
+    name: finacle-support-web
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
