@@ -42,6 +42,82 @@ class AppTests(unittest.TestCase):
                     self.assertEqual(response.json['content'], 'two\nthree')
                     self.assertEqual(execute.call_args.args[0][4:], ['exec', source + '-abc-1', '-c', 'sidecar', '--', 'tail', '-c', '262144', '--', config['path'] + '/' + filename])
 
+    def test_fnhttp_deployment_files_and_missing_directory(self):
+        deployment, item, rs = healthy_deployment('fnhttpac')
+        item['spec']['containers'] = [{'name': 'sidecar'}, {'name': 'fnhttpac'}]
+        job = pod('fnhttppy-restart-29905680-7nrxq')
+        job['metadata']['ownerReferences'] = [{'kind': 'Job', 'uid': 'job', 'controller': True}]
+        def resources(kind):
+            return {'pods': [item, job], 'deployments': [deployment], 'replicasets': [rs]}[kind]
+        with patch.object(module, 'resources', side_effect=resources):
+            result = module.pods()
+            self.assertEqual(result[0]['source'], 'fnhttp')
+            self.assertEqual(result[0]['fnhttp_service'], 'ac')
+            self.assertIsNone(result[1]['source'])
+            for output, expected in [('', []),
+                    ('100' + '\0' + '200' + '\0' + '1500000' + '\0' + module.SOURCES['fnhttp']['path'] + '/debug.log\0' + '100' + '\0' + '200' + '\0' + '1500000' + '\0/etc/secret.log\0', ['debug.log'])]:
+                with patch.object(module, 'oc', return_value=output):
+                    response = self.client.get('/api/log-files?source=fnhttp')
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json['files'], expected)
+            with patch.object(module, 'oc', return_value='last line') as execute:
+                response = self.client.get('/api/logs?source=fnhttp&file=debug.log')
+                self.assertEqual(response.json['content'], 'last line')
+                self.assertEqual(execute.call_args.args[3], 'fnhttpac')
+                self.assertEqual(execute.call_args.args[-1], module.SOURCES['fnhttp']['path'] + '/debug.log')
+            with patch.object(module, 'oc', side_effect=module.ClusterError('No such file or directory')):
+                self.assertEqual(self.client.get('/api/logs?source=fnhttp&file=debug.log').status_code, 404)
+            with patch.object(module, 'oc') as execute:
+                self.assertEqual(self.client.get('/api/logs?source=fnhttp&file=../../secret.log').status_code, 400)
+                self.assertEqual(self.client.get('/api/log-files?source=fnhttp&pod=' + job['metadata']['name']).status_code, 404)
+                self.assertEqual(self.client.get('/api/log-files?source=fnhttp&container=sidecar').status_code, 400)
+                self.assertEqual(self.client.get('/api/log-files?source=fnhttp&service=py').status_code, 404)
+                execute.assert_not_called()
+
+    def test_fnhttp_lists_and_reads_all_file_extensions(self):
+        deployment, item, rs = healthy_deployment('fnhttpac')
+        item['spec']['containers'] = [{'name': 'fnhttpac'}]
+        names = ['chkIfChnlEnbForInqAudit.scr_4383_1110.stdout',
+                 'chkIfChnlEnbForInqAudit.scr_4383_1110.trc',
+                 'no_extension', '.hidden', 'with spaces.stdout', 'debug.log']
+        directory = module.SOURCES['fnhttp']['path']
+        def resources(kind):
+            return {'pods': [item], 'deployments': [deployment], 'replicasets': [rs]}[kind]
+        with patch.object(module, 'resources', side_effect=resources):
+            listing = ''.join('100' + '\0' + '200' + '\0' + '1500000' + '\0' + directory + '/' + name + '\0' for name in names)
+            with patch.object(module, 'oc', return_value=listing) as execute:
+                response = self.client.get('/api/log-files?source=fnhttp')
+                self.assertEqual(response.json['files'], sorted(names))
+                self.assertNotIn('-name', execute.call_args.args[-3])
+            for name in names:
+                with self.subTest(filename=name), patch.object(module, 'oc', return_value='trace content') as execute:
+                    response = self.client.get('/api/logs', query_string={'source': 'fnhttp', 'file': name})
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.json['content'], 'trace content')
+                    self.assertEqual(execute.call_args.args[-1], directory + '/' + name)
+            for name in ['.', '..', '../secret', 'dir/file', 'dir\\file', 'bad\nname']:
+                with patch.object(module, 'oc') as execute:
+                    self.assertEqual(self.client.get('/api/logs', query_string={'source': 'fnhttp', 'file': name}).status_code, 400)
+                    execute.assert_not_called()
+
+    def test_fnhttp_files_sort_by_creation_time_with_modified_fallback(self):
+        directory = module.SOURCES['fnhttp']['path']
+        records = [('100', '900', 'old.stdout'), ('300', '400', 'new.trc'),
+                   ('0', '200', 'fallback'), ('-1', '50', 'unknown-birth')]
+        output = ''.join('\0'.join([birth, modified, '1500000', directory + '/' + name]) + '\0'
+                         for birth, modified, name in records)
+        selected = {'name': 'fnhttpac-pod', 'source': 'fnhttp', 'phase': 'Running',
+                    'fnhttp_service': 'ac', 'containers': ['fnhttpac']}
+        with patch.object(module, 'selected_log_pod', return_value=selected), patch.object(module, 'oc', return_value=output):
+            response = self.client.get('/api/log-files?source=fnhttp')
+        self.assertEqual(response.json['files'], ['new.trc', 'fallback', 'old.stdout', 'unknown-birth'])
+        details = response.json['file_details']
+        self.assertEqual(details[0]['time_kind'], 'created')
+        self.assertEqual(details[0]['size_bytes'], 1500000)
+        self.assertEqual(details[1]['time_kind'], 'modified')
+        self.assertEqual(details[1]['timestamp'], 200)
+        self.assertEqual(details[0]['time'], '1970-01-01T00:05:00+00:00')
+
     def test_rejects_arbitrary_paths_and_invalid_lines_before_cluster(self):
         for query in [{'source': 'fip', 'file': '../../etc/passwd'},
                       {'source': 'other', 'file': 'ciErrorLog.log'},

@@ -3,7 +3,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: finacle-support-pre-uat-access
-  namespace: uat-finacle
+  namespace: pre-uat-finacle
 rules:
   - apiGroups: [""]
     resources: [configmaps]
@@ -42,7 +42,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: finacle-support-pre-uat-access
-  namespace: uat-finacle
+  namespace: pre-uat-finacle
 subjects:
   - kind: ServiceAccount
     name: finacle-support-sa

@@ -20,7 +20,7 @@ spec:
         - name: securereg
       containers:
         - name: finacle-support-web
-          image: securereg.m-bank.mn:5000/finacle-support-web:1.4
+          image: securereg.m-bank.mn:5000/finacle-support-web:1.9
           env:
             - name: NAMESPACE
               value: pre-uat-finacle

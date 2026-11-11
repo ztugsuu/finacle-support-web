@@ -11,7 +11,7 @@ const python = path.join(root, '.venv-local', 'Scripts', 'python.exe');
 const rendered = spawnSync(python, ['-B', '-c', "from app import app; print(app.test_client().get('/').data.decode('utf-8'))"],
   {cwd: root, encoding: 'utf8', env: {...process.env, PYTHONIOENCODING: 'utf-8'}, windowsHide: true});
 assert.equal(rendered.status, 0, rendered.stderr);
-const renderedUat = spawnSync(python, ['-B', '-c', "from app import app; print(app.test_client().get('/?namespace=uat-finacle').data.decode('utf-8'))"],
+const renderedUat = spawnSync(python, ['-B', '-c', "from app import app; print(app.test_client().get('/?namespace=pre-uat-finacle').data.decode('utf-8'))"],
   {cwd: root, encoding: 'utf8', env: {...process.env, PYTHONIOENCODING: 'utf-8'}, windowsHide: true});
 assert.equal(renderedUat.status, 0, renderedUat.stderr);
 let failPreview = false, applied = 0, rolloutReads = 0;
@@ -22,7 +22,7 @@ const scopedRequests = [];
 const server = http.createServer((req, res) => {
   requests.push(req.url);
   if (req.url.startsWith('/api/') || req.url === '/restart') scopedRequests.push({url: req.url, namespace: req.headers['x-finacle-namespace']});
-  if (req.url === '/' || req.url.startsWith('/?')) { res.setHeader('Content-Type', 'text/html; charset=utf-8'); return res.end(req.url.includes('namespace=uat-finacle') ? renderedUat.stdout : rendered.stdout); }
+  if (req.url === '/' || req.url.startsWith('/?')) { res.setHeader('Content-Type', 'text/html; charset=utf-8'); return res.end(req.url.includes('namespace=pre-uat-finacle') ? renderedUat.stdout : rendered.stdout); }
   if (['/static/app.js', '/static/app.css'].includes(req.url)) {
     res.setHeader('Content-Type', req.url.endsWith('.js') ? 'text/javascript' : 'text/css');
     return res.end(fs.readFileSync(path.join(root, req.url.slice(1))));

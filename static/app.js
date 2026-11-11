@@ -14,7 +14,7 @@ let source = 'fip', podList = [], content = '', logTimer, logRequest, generation
 let activeScreen = 'overview';
 const pages = {
   overview: ['Системийн ерөнхий хяналт', 'Үйлчилгээ болон pod-уудын төлөв.'],
-  logs: ['Log хяналт', 'FIP болон FNBRNMPY log файлуудыг унших, хайх, татах.'],
+  logs: ['Log хяналт', 'FIP, FNBRNMPY болон FNHTTP log файлуудыг унших, хайх, татах.'],
   control: ['Log control', 'Log түвшнийг сонгож, dry-run шалгасны дараа өөрчлөлтөө баталгаажуулна.'],
   deployments: ['Deployments', 'Deployment-ийн төлөв болон restart үйлдэл.']
 };
@@ -63,12 +63,16 @@ function emptyTable(id, columns, message) { const row = document.createElement('
 function fillContainers() {
   const previous = $('container').value;
   const pod = podList.find(p => p.name === $('pod').value);
-  $('container').replaceChildren(...(pod?.containers || []).map(option));
-  if (pod?.containers.includes(previous)) $('container').value = previous;
+  const containers = source === 'fnhttp'
+    ? (pod?.containers || []).filter(name => name === `fnhttp${$('fnhttp-service').value}`)
+    : (pod?.containers || []);
+  $('container').replaceChildren(...containers.map(option));
+  $('container').disabled = source === 'fnhttp';
+  if (containers.includes(previous)) $('container').value = previous;
 }
 function fillPods() {
   const previous = $('pod').value;
-  const available = podList.filter(p => p.source === source).sort((a,b) => Number(b.healthy)-Number(a.healthy) || a.name.localeCompare(b.name));
+  const available = podList.filter(p => p.source === source && (source !== 'fnhttp' || p.fnhttp_service === $('fnhttp-service').value)).sort((a,b) => Number(b.healthy)-Number(a.healthy) || a.name.localeCompare(b.name));
   $('pod').replaceChildren(...available.map(p => option(p.name)));
   if (available.some(p => p.name === previous)) $('pod').value = previous;
   if (!available.length) $('pod').add(new Option('Тохирох pod олдсонгүй', ''));
@@ -98,12 +102,38 @@ async function readLogs() {
     $('log-state').textContent = 'Pod байхгүй'; $('log-output').textContent = 'Энэ эх үүсвэрт тохирох pod олдсонгүй. Төлөв шинэчилнэ үү.';
     return;
   }
+  if (source === 'fnhttp' && !$('container').value) {
+    content = ''; $('log-state').textContent = 'Container байхгүй';
+    $('log-output').textContent = `Сонгосон pod дотор fnhttp${$('fnhttp-service').value} container олдсонгүй.`;
+    return;
+  }
   logRequest = new AbortController();
   const controller = logRequest;
   const timeout = setTimeout(() => controller.abort(), 45000);
   $('log-state').textContent = 'Уншиж байна…';
   try {
-    const query = new URLSearchParams({source, pod: $('pod').value, container: $('container').value, file: $('file').value, lines: $('lines').value});
+    if (sources[source].dynamic) {
+      const selection = new URLSearchParams({source, service: source === 'fnhttp' ? $('fnhttp-service').value : '', pod: $('pod').value, container: $('container').value});
+      const listing = await api(`/api/log-files?${selection}`, {signal: controller.signal});
+      if (current !== generation) return;
+      const previousFile = $('file').value;
+      $('file').replaceChildren(...listing.file_details.map(file => {
+        const time = new Date(file.time).toLocaleString('mn-MN', {timeZone: 'Asia/Ulaanbaatar', hour12: false});
+        const label = file.time_kind === 'created' ? 'Үүссэн' : 'Өөрчлөгдсөн';
+        return new Option(`${time} (УБ) · ${label} · ${file.name} · ${(file.size_bytes / 1000000).toFixed(2)} MB`, file.name);
+      }));
+      if (listing.files.includes(previousFile)) $('file').value = previousFile;
+      if (!listing.files.length) {
+        content = ''; notice('log-error', '');
+        $('log-state').textContent = 'Log файл байхгүй';
+        $('log-output').textContent = 'Энэ pod/container-ийн FIVUSR хавтас дотор файл байхгүй байна.';
+        $('line-count').textContent = '0 мөр'; $('log-updated').textContent = 'Уншаагүй';
+        $('truncated').hidden = true;
+        return;
+      }
+      $('log-path').textContent = `${sources[source].path}/${$('file').value}`;
+    }
+    const query = new URLSearchParams({source, service: source === 'fnhttp' ? $('fnhttp-service').value : '', pod: $('pod').value, container: $('container').value, file: $('file').value, lines: $('lines').value});
     const data = await api(`/api/logs?${query}`, {signal: logRequest.signal});
     if (current !== generation) return;
     content = data.content; renderLogs(); notice('log-error', '');
@@ -178,9 +208,11 @@ async function restart(name, button) {
 }
 document.querySelectorAll('[data-source]').forEach(button => button.addEventListener('click', () => {
   source = button.dataset.source;
+  $('fnhttp-service-filter').hidden = source !== 'fnhttp';
   document.querySelectorAll('[data-source]').forEach(tab => { const active = tab === button; tab.classList.toggle('selected', active); tab.setAttribute('aria-pressed', String(active)); });
   $('file').replaceChildren(...sources[source].files.map(option)); fillPods(); resetLogs();
 }));
+$('fnhttp-service').addEventListener('change', () => { fillPods(); $('file').replaceChildren(); resetLogs(); });
 $('pod').addEventListener('change', () => { fillContainers(); resetLogs(); });
 ['container','file','lines'].forEach(id => $(id).addEventListener('change', resetLogs));
 $('search').addEventListener('input', renderLogs);
