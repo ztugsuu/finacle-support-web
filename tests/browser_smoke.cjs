@@ -8,10 +8,10 @@ const path = require('node:path');
 const {spawn, spawnSync} = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const python = path.join(root, '.venv-local', 'Scripts', 'python.exe');
-const rendered = spawnSync(python, ['-B', '-c', "from app import app; print(app.test_client().get('/').data.decode('utf-8'))"],
+const rendered = spawnSync(python, ['-B', '-c', "import sys; sys.path.insert(0, 'tests'); from fixtures import authenticated_client; from app import app; print(authenticated_client(app).get('/').data.decode('utf-8'))"],
   {cwd: root, encoding: 'utf8', env: {...process.env, PYTHONIOENCODING: 'utf-8'}, windowsHide: true});
 assert.equal(rendered.status, 0, rendered.stderr);
-const renderedUat = spawnSync(python, ['-B', '-c', "from app import app; print(app.test_client().get('/?namespace=uat-finacle').data.decode('utf-8'))"],
+const renderedUat = spawnSync(python, ['-B', '-c', "import sys; sys.path.insert(0, 'tests'); from fixtures import authenticated_client; from app import app; print(authenticated_client(app).get('/?namespace=uat-finacle').data.decode('utf-8'))"],
   {cwd: root, encoding: 'utf8', env: {...process.env, PYTHONIOENCODING: 'utf-8'}, windowsHide: true});
 assert.equal(renderedUat.status, 0, renderedUat.stderr);
 let failPreview = false, applied = 0, rolloutReads = 0;

@@ -4,12 +4,13 @@ import unittest
 from unittest.mock import patch
 
 import app as module
+from fixtures import authenticated_client
 from fixtures import healthy_deployment
 
 
 class LogControlTests(unittest.TestCase):
     def setUp(self):
-        self.client = module.app.test_client()
+        self.client = authenticated_client(module.app)
         self.client.environ_base['HTTP_X_FINACLE_NAMESPACE'] = 'pre-uat-finacle'
         self.config = {'metadata': {'name': 'fnhttp-ac-env', 'resourceVersion': '12'},
                        'data': {'UNRELATED': 'keep', 'DEBUG_LOG_LEVEL': 'NONE'}}

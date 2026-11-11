@@ -29,7 +29,7 @@ oc -n pre-uat-finacle port-forward svc/finacle-support-web 5000:5000
 
 Open `http://localhost:5000`. The existing private-registry pull secret named `securereg` must exist in this namespace. Update the image tag in `manifests/deploy.yaml` for subsequent builds. `Dockerfile` and the legacy `ztdockerfile` use the same production configuration. The OpenShift client defaults to 4.14.27 (matching the locally installed client); set `--build-arg OC_VERSION=VERSION` to the version supported by your cluster.
 
-The web Deployment, Service and ServiceAccount live in `pre-uat-finacle`. Namespaced Roles and RoleBindings grant that ServiceAccount access to both projects. `rbac-uat.yaml` binds the PRE-UAT ServiceAccount in UAT; it does not create a second web Deployment. Kustomization deliberately has no namespace transformer: resource namespaces must stay explicit. Do not apply this bundle with an overriding `-n` flag. Applying both Roles requires permission in both namespaces. In the pod, `oc` uses the mounted service-account credentials. No local kubeconfig is built into the image. No public Route is created. For shared browser access, connect the service through your existing authenticated internal ingress/access proxy. The application itself has no login or per-user role separation: anyone with access can read logs and request deployment restarts.
+The web Deployment, Service and ServiceAccount live in `pre-uat-finacle`. Namespaced Roles and RoleBindings grant that ServiceAccount access to both projects. `rbac-uat.yaml` binds the PRE-UAT ServiceAccount in UAT; it does not create a second web Deployment. Kustomization deliberately has no namespace transformer: resource namespaces must stay explicit. Do not apply this bundle with an overriding `-n` flag. Applying both Roles requires permission in both namespaces. In the pod, `oc` uses the mounted service-account credentials. No local kubeconfig is built into the image. No public Route is created. For shared browser access, connect the service through your existing authenticated internal ingress/access proxy. The application requires LDAP login. All authenticated LDAP accounts have the same dashboard permissions; per-user roles are not implemented.
 
 The Roles grant pod/ReplicaSet list/get, container logs, pod exec, and deployment list/get/patch for the existing restart feature. Kubernetes `pods/exec` permission cannot restrict the executable or file path; the application enforces its fixed file allowlist. Deployment restart asks for confirmation in the browser and is limited to deployments returned from the selected namespace. If restart should be disabled operationally, remove deployment `patch` from both Roles.
 
@@ -132,8 +132,7 @@ The repository RBAC manifest adds ConfigMap read/list and patch rights limited t
 the nine known ConfigMaps in each project. Add explicit names to both Roles for new Finbranch ConfigMaps;
 RBAC resource names do not support wildcards. This manifest must be deployed by
 an authorized operator for in-cluster use. Local execution uses the logged-in
-`oc` user's permissions. The app has no user login; use the existing authenticated
-internal access proxy for shared access.
+`oc` user's permissions. The app requires LDAP login; retain the internal access proxy for shared access.
 
 ## Verification commands
 
@@ -152,3 +151,29 @@ without connecting to the cluster.
 For local development, install `requirements.txt`, authenticate `oc` to the intended cluster, then run `python app.py`. `/health` checks the web process; `/api/overview` checks cluster access. A failure to read deployments does not hide available pod information.
 
 After deployment, confirm both source tabs show the intended pods, select the correct application container, and open each of the five files. A permission or missing-file error is displayed in the log panel. Use a controlled environment to validate the optional restart action.
+
+## LDAP login setup
+
+Set these entries in `manifests/deploy.yaml` manually before deployment:
+
+- `LDAP_URL`: `ldaps://dc.example.com:636` or `ldap://dc.example.com:389` (StartTLS when LDAP_INSECURE=false).
+- `LDAP_USER_DN_TEMPLATE` (direct-bind mode only): AD UPN: `{username}@example.com`; OpenLDAP: `uid={username},ou=People,dc=example,dc=com`.
+- `SECRET_KEY`: referenced from the `finacle-support-auth` Secret; create it before applying the Deployment. Generate a random value using `python -c "import secrets; print(secrets.token_hex(32))"`, then create the Secret securely with key `SECRET_KEY`. Use the same value across workers/replicas. Never commit it.
+- `SESSION_COOKIE_SECURE`: keep `true` behind HTTPS. Only for local HTTP/port-forward testing set `false`.
+- Optional `LDAP_CA_CERT_FILE`: absolute PEM CA bundle path for your private LDAP CA. Mount the CA using a ConfigMap/Secret volume and add this environment variable. Certificate and hostname verification are enabled when LDAP_INSECURE=false.
+
+Login supports direct bind and search-and-bind. The deployment uses search-and-bind: set LDAP_BASE_DN, LDAP_USERNAME_ATTRIBUTE, LDAP_BIND_DN and LDAP_BIND_PASSWORD. LDAP_BIND_PASSWORD references key bindPassword in the my-ldap-bind-password Secret in pre-uat-finacle. Create that Secret in this namespace; a Secret in openshift-config is not accessible to this Deployment. With LDAP_BASE_DN set, LDAP_USER_DN_TEMPLATE is unused. LDAP_INSECURE=true matches the supplied OpenShift insecure setting and disables StartTLS for ldap:// (and certificate validation for ldaps://); use false for verified TLS. Search must return exactly one entry, then its DN is bound with the submitted password. No OpenShift OAuth attributes or mappingMethod settings are needed for this application. Enter only the username part expected by your template. Users in different OUs require an appropriate shared login identity such as AD UPN. All LDAP accounts that successfully bind receive the existing dashboard permissions; restrict access through your directory/access proxy if needed. Configure login request rate limiting at your internal ingress.
+
+Unauthenticated dashboard/log pages redirect to `/login`; APIs/restart return 401. Login and logout require a CSRF token. Sessions expire eight hours after login and contain only the username and CSRF token, never the LDAP password. `/health` stays public for probes. Missing configuration blocks login. No live LDAP connection is needed for unit tests.
+
+For local PowerShell development:
+
+```powershell
+$env:LDAP_URL = 'ldaps://dc.example.com:636'
+$env:LDAP_USER_DN_TEMPLATE = '{username}@example.com'
+$env:SECRET_KEY = (python -c "import secrets; print(secrets.token_hex(32))")
+$env:SESSION_COOKIE_SECURE = 'false'
+python app.py
+```
+
+Rebuild the container after installing the updated requirements and deploy using a new image tag. LDAP credentials must be checked against your real directory after you supply the settings.

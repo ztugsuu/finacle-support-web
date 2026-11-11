@@ -4,12 +4,13 @@ import unittest
 from unittest.mock import patch
 
 import app as module
+from fixtures import authenticated_client
 from fixtures import healthy_deployment
 
 
 class ResetDefaultsTests(unittest.TestCase):
     def setUp(self):
-        self.client = module.app.test_client()
+        self.client = authenticated_client(module.app)
         self.headers = {'X-Finacle-Namespace': 'uat-finacle', 'X-Requested-With': 'FinacleSupport'}
         names = sorted(module.FNHTTP_CONFIGS) + ['fip-env'] + [f'finbranch-fip-{x}-env' for x in ('ac', 'la', 'py', 'rof')]
         self.configs = [{'metadata': {'name': n, 'resourceVersion': str(i)},

@@ -6,6 +6,7 @@ from unittest.mock import patch, Mock
 from concurrent.futures import ThreadPoolExecutor
 
 import app as module
+from fixtures import authenticated_client
 from restart_guard import eligibility
 from fixtures import healthy_deployment
 
@@ -74,7 +75,7 @@ class RestartGuardTests(unittest.TestCase):
 
 class NamespaceTests(unittest.TestCase):
     def test_bad_and_conflicting_namespaces_never_reach_cluster(self):
-        client = module.app.test_client()
+        client = authenticated_client(module.app)
         with patch.object(module, 'oc') as oc:
             self.assertEqual(client.get('/api/overview?namespace=production').status_code, 400)
             self.assertEqual(client.get('/api/overview?namespace=uat-finacle', headers={'X-Finacle-Namespace': 'pre-uat-finacle'}).status_code, 400)
@@ -87,7 +88,7 @@ class NamespaceTests(unittest.TestCase):
             seen.append(command)
             return Mock(returncode=0, stdout=b'{"items":[]}', stderr=b'')
         def request(namespace):
-            client = module.app.test_client()
+            client = authenticated_client(module.app)
             return client.get('/api/log-control', headers={'X-Finacle-Namespace': namespace}).status_code
         with patch.object(module.subprocess, 'run', side_effect=run), ThreadPoolExecutor(2) as pool:
             self.assertEqual(list(pool.map(request, module.NAMESPACES)), [200, 200])
@@ -95,7 +96,7 @@ class NamespaceTests(unittest.TestCase):
         self.assertTrue(all(cmd[:2] == ['oc', '-n'] for cmd in seen))
 
     def test_uat_page_shows_uat_without_preuat_banner(self):
-        page = module.app.test_client().get('/?namespace=uat-finacle').data.decode()
+        page = authenticated_client(module.app).get('/?namespace=uat-finacle').data.decode()
         self.assertIn('value="uat-finacle" selected', page)
         self.assertNotIn('PRE-UAT ENVIRONMENT', page)
 
@@ -103,7 +104,7 @@ class NamespaceTests(unittest.TestCase):
         deployment, pod, rs = healthy_deployment('fip', 'fip-env')
         pod['status']['containerStatuses'][0]['ready'] = False
         with patch.object(module, 'resources', side_effect=lambda k: {'deployments': [deployment], 'pods': [pod], 'replicasets': [rs]}[k]), patch.object(module, 'oc') as oc:
-            response = module.app.test_client().post('/restart', json={'name': 'fip'}, headers={
+            response = authenticated_client(module.app).post('/restart', json={'name': 'fip'}, headers={
                 'X-Requested-With': 'FinacleSupport', 'X-Finacle-Namespace': 'uat-finacle'})
             self.assertEqual(response.status_code, 409)
             oc.assert_not_called()
@@ -116,7 +117,7 @@ class NamespaceTests(unittest.TestCase):
             deployment['metadata']['resourceVersion'] = '32'
             return '{}'
         headers = {'X-Requested-With': 'FinacleSupport', 'X-Finacle-Namespace': 'pre-uat-finacle'}
-        client = module.app.test_client()
+        client = authenticated_client(module.app)
         with patch.object(module, 'resources', side_effect=lambda k: {'deployments': [deployment], 'pods': [pod], 'replicasets': [rs]}[k]), patch.object(module, 'oc', side_effect=write) as oc:
             self.assertEqual(client.post('/restart', json={'name': 'fip'}, headers=headers).status_code, 200)
             self.assertEqual(client.post('/restart', json={'name': 'fip'}, headers=headers).status_code, 409)
@@ -128,7 +129,7 @@ class NamespaceTests(unittest.TestCase):
             if kind == 'replicasets': raise module.ClusterError('forbidden')
             return {'deployments': [d], 'pods': [p]}[kind]
         with patch.object(module, 'resources', side_effect=resources):
-            response = module.app.test_client().get('/api/overview')
+            response = authenticated_client(module.app).get('/api/overview')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json['pods']), 1)
         self.assertFalse(response.json['deployments'][0]['restart']['allowed'])

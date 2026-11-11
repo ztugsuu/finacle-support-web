@@ -24,6 +24,28 @@ spec:
           env:
             - name: NAMESPACE
               value: pre-uat-finacle
+            - name: LDAP_URL
+              value: "ldap://172.18.31.10:389"
+            - name: LDAP_BASE_DN
+              value: "dc=mbank,dc=local"
+            - name: LDAP_USERNAME_ATTRIBUTE
+              value: "sAMAccountName"
+            - name: LDAP_BIND_DN
+              value: "dn"
+            - name: LDAP_BIND_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: my-ldap-bind-password
+                  key: bindPassword
+            - name: LDAP_INSECURE
+              value: "true"
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: finacle-support-auth
+                  key: SECRET_KEY
+            - name: SESSION_COOKIE_SECURE
+              value: "true" # HTTPS required; false only for local HTTP development
           ports:
             - containerPort: 5000
               name: http

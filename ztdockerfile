@@ -12,7 +12,7 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1 HOME=/tmp
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY app.py restart_guard.py ./
+COPY app.py restart_guard.py authentication.py ./
 COPY templates ./templates
 COPY static ./static
 USER 1001

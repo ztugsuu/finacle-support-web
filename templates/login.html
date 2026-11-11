@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="mn">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Нэвтрэх · Finacle Support</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body class="login-page">
+<main class="login-card">
+  <div class="login-mark" aria-hidden="true">F</div>
+  <p>FINACLE SUPPORT</p><h1>Системд нэвтрэх</h1>
+  <p>Байгууллагын LDAP эрхээрээ нэвтэрнэ үү.</p>
+  {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+  <form method="post" action="{{ url_for('login') }}">
+    <input type="hidden" name="csrf_token" value="{{ session.get('csrf_token', '') }}">
+    <label for="username">Нэвтрэх нэр</label>
+    <input id="username" name="username" autocomplete="username" maxlength="128" required autofocus>
+    <label for="password">Нууц үг</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" maxlength="1024" required>
+    <button class="button" type="submit">Нэвтрэх</button>
+  </form>
+</main>
+</body></html>

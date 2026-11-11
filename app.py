@@ -8,7 +8,10 @@ import re
 import subprocess
 from datetime import datetime, timezone
 
+from authentication import init_auth
+
 app = Flask(__name__)
+init_auth(app)
 NAMESPACES = ('pre-uat-finacle', 'uat-finacle')
 NAMESPACE = os.environ.get('NAMESPACE', 'pre-uat-finacle')
 if NAMESPACE not in NAMESPACES:
@@ -21,6 +24,8 @@ def current_namespace():
 
 @app.before_request
 def select_namespace():
+    if request.endpoint in ('login', 'logout', 'health', 'static'):
+        return
     header, query = request.headers.get('X-Finacle-Namespace'), request.args.get('namespace')
     if header and query and header != query:
         return jsonify(message='Project сонголтууд зөрж байна.'), 400

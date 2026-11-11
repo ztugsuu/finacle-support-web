@@ -20,3 +20,11 @@ def healthy_deployment(name='actual-ac', configmap='fnhttp-ac-env', now=None):
                    'containerStatuses': [{'name': 'finacle', 'ready': True, 'restartCount': 0,
                                           'state': {'running': {'startedAt': old}}}]}}
     return deployment, pod, replicaset
+
+
+def authenticated_client(app):
+    app.config.update(SECRET_KEY='unit-test-only-secret', SESSION_COOKIE_SECURE=False)
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session.update(username='test.operator', csrf_token='test-csrf')
+    return client

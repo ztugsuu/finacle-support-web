@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 const $ = id => document.getElementById(id);
 const sources = JSON.parse($('sources').textContent);
 const namespace = $('project-select').value;
@@ -48,6 +48,7 @@ window.addEventListener('hashchange', () => showPage());
 function notice(id, message) { $(id).textContent = message || ''; $(id).hidden = !message; }
 async function api(url, options = {}) {
   const response = await fetch(url, {...options, headers: {...options.headers, 'X-Finacle-Namespace': namespace}, signal: options.signal || AbortSignal.timeout(45000)});
+  if (response.status === 401) { location.assign('/login'); throw new Error('Нэвтрэх шаардлагатай.'); }
   const data = await response.json();
   if (!response.ok) {
     const error = new Error(data.message || `HTTP ${response.status}`);
