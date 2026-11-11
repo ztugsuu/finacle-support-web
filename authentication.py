@@ -1,5 +1,6 @@
 """LDAP direct or search-and-bind login; passwords never enter the session."""
 import hmac
+import logging
 import os
 import re
 import secrets
@@ -16,6 +17,19 @@ from ldap3.utils.conv import escape_filter_chars
 
 class LDAPUnavailable(Exception):
     pass
+
+
+def service_bind_error(result):
+    # Never expose the directory diagnostic text, DNs or passwords.
+    code = result.get('result') if isinstance(result, dict) else None
+    logging.getLogger(__name__).warning('LDAP service bind rejected (result=%s)',
+                                        code if isinstance(code, int) else 'unknown')
+    if code == 49:
+        return 'LDAP service account нэвтэрсэнгүй (код 49). Bind account болон түүний нууц үгийг админаар шалгуулна уу.'
+    if code in (8, 13):
+        return 'LDAP сервер хамгаалалттай холболт шаардаж байна. TLS тохиргоог админаар шалгуулна уу.'
+    suffix = f' (код {code})' if isinstance(code, int) else ''
+    return f'LDAP service account bind амжилтгүй{suffix}. Администраторт хандана уу.'
 
 
 def authenticate(username, password):
@@ -54,7 +68,7 @@ def authenticate(username, password):
             raise LDAPUnavailable('LDAP TLS холболт амжилтгүй.')
         if search_mode:
             if not connection.bind():
-                raise LDAPUnavailable('LDAP хайлтын эрхийн тохиргоог шалгана уу.')
+                raise LDAPUnavailable(service_bind_error(connection.result))
             found = connection.search(base_dn, f'({attribute}={escape_filter_chars(username)})',
                                       attributes=['1.1'], size_limit=2, time_limit=5)
             if connection.result.get('result') != 0:

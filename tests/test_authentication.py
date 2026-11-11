@@ -4,7 +4,7 @@ from unittest.mock import patch, Mock
 
 from flask import Flask
 import app as module
-from authentication import init_auth, authenticate, LDAPUnavailable
+from authentication import init_auth, authenticate, LDAPUnavailable, service_bind_error
 
 
 class AuthenticationTests(unittest.TestCase):
@@ -33,6 +33,39 @@ class AuthenticationTests(unittest.TestCase):
             connection.entries = [Mock(), Mock()]
             self.assertFalse(authenticate('duplicate', 'user-secret'))
             connection.rebind.assert_not_called()
+
+    @patch.dict(os.environ, {'LDAP_URL': 'ldap://172.18.31.10:389', 'LDAP_BASE_DN': 'dc=mbank,dc=local',
+                            'LDAP_BIND_DN': 'openshift@mbank.local', 'LDAP_BIND_PASSWORD': 'service-test-only',
+                            'LDAP_USERNAME_ATTRIBUTE': 'sAMAccountName', 'LDAP_INSECURE': 'true'})
+    def test_admin_service_bind_failure_does_not_attempt_user_search(self):
+        with patch('authentication.Connection') as factory, patch('authentication.Server'), patch('authentication.Tls'):
+            connection = factory.return_value
+            connection.closed = False
+            connection.bind.return_value = False
+            with self.assertRaises(LDAPUnavailable):
+                authenticate('operator', 'user-test-only')
+            self.assertEqual(factory.call_args.kwargs['user'], 'openshift@mbank.local')
+            connection.search.assert_not_called()
+            connection.rebind.assert_not_called()
+            connection.unbind.assert_called_once()
+
+    def test_service_bind_diagnostic_does_not_expose_directory_message(self):
+        message = service_bind_error({'result': 49, 'message': 'sensitive-directory-detail'})
+        self.assertIn('49', message)
+        self.assertNotIn('sensitive-directory-detail', message)
+        self.assertIn('TLS', service_bind_error({'result': 8}))
+        self.assertNotIn('sensitive-directory-detail', service_bind_error({'result': 1, 'message': 'sensitive-directory-detail'}))
+
+    def test_real_app_requires_login_for_both_projects_and_zip_download(self):
+        client = module.app.test_client()
+        with patch.object(module, 'oc_bytes') as execute:
+            for namespace in module.NAMESPACES:
+                headers = {'X-Finacle-Namespace': namespace, 'X-Requested-With': 'FinacleSupport'}
+                self.assertEqual(client.get('/api/overview', headers=headers).status_code, 401)
+                self.assertEqual(client.post('/api/logs/download?source=fnhttp', headers=headers,
+                                            json={'files': ['test.trc']}).status_code, 401)
+            execute.assert_not_called()
+        self.assertEqual(client.get('/health').status_code, 200)
 
     def setUp(self):
         self.app = Flask(__name__, template_folder=module.app.template_folder,

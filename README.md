@@ -153,3 +153,85 @@ without connecting to the cluster.
 For local development, install `requirements.txt`, authenticate `oc` to the intended cluster, then run `python app.py`. `/health` checks the web process; `/api/overview` checks cluster access. A failure to read deployments does not hide available pod information.
 
 After deployment, confirm both source tabs show the intended pods, select the correct application container, and open each of the five files. A permission or missing-file error is displayed in the log panel. Use a controlled environment to validate the optional restart action.
+
+## LDAP login setup
+
+The merged authentication code already protects the dashboard and all log, ZIP,
+ConfigMap and restart endpoints. `/health`, static assets and `/login` remain public.
+The login form searches LDAP using the service account, then binds as the matching
+user with the supplied password. Passwords are never saved in the browser session.
+Session cookies expire after eight hours; logout clears the session.
+
+The admin-provided OpenShift identity-provider YAML maps to these web settings:
+
+| Admin setting | Web Deployment setting |
+| --- | --- |
+| `ldap://172.18.31.10/dc=mbank,dc=local?sAMAccountName` | `LDAP_URL=ldap://172.18.31.10:389`, `LDAP_BASE_DN=dc=mbank,dc=local`, `LDAP_USERNAME_ATTRIBUTE=sAMAccountName` |
+| `bindDN: openshift@mbank.local` | `LDAP_BIND_DN=openshift@mbank.local` |
+| `bindPassword.name` | Provision the same bind password in the application Secret described below |
+| `insecure: true` | `LDAP_INSECURE=true` (plain LDAP, matching the supplied configuration) |
+| `attributes.id: [dn]` | The search result's DN is used for the user bind; this is not the service-account bind name |
+
+The admin LDAP attribute (`утга1`) is confirmed as `sAMAccountName`.
+`LDAP_USERNAME_ATTRIBUTE=sAMAccountName` is configured in the Deployment.
+Log in using your `sAMAccountName` value and your LDAP password.
+`утга2` represents a Secret name, not the password itself. The web uses its own
+`finacle-support-ldap` Secret, with key `bindPassword`, in `pre-uat-finacle`.
+An OpenShift OAuth Secret in `openshift-config` cannot be referenced directly by
+this Deployment; ask the admin to provision its bind password in the web namespace.
+Do not commit passwords or Secret exports to Git.
+
+Before applying the Deployment, provision both required Secrets in `pre-uat-finacle`:
+
+- `finacle-support-ldap`: key `bindPassword`, containing the bind account password.
+- `finacle-support-auth`: key `SECRET_KEY`, containing a strong random session
+  signing key shared by all web workers/replicas (at least 32 random bytes).
+
+Create missing Secrets using an authenticated operator's PowerShell session:
+
+```powershell
+oc whoami --show-server
+.\scripts\create-auth-secrets.ps1
+```
+
+The script prompts for the `openshift@mbank.local` bind password with hidden input
+and generates a random session signing key. Secret values travel to `oc` via stdin;
+the script does not write password files or print values. Existing Secrets are
+preserved (the script is for first-time provisioning, not password rotation).
+It does not deploy the application or modify cluster OAuth. These Secrets belong
+to `pre-uat-finacle`; the web service account needs no access to `openshift-config`.
+Use your existing secret-management process if appropriate. Both project
+choices continue to use the web service account's existing RBAC after user login.
+All authenticated LDAP users currently have the same dashboard permissions.
+
+Serve the web through HTTPS: `SESSION_COOKIE_SECURE=true` is enabled in the manifest.
+For local HTTP development only, set `SESSION_COOKIE_SECURE=false` together with
+`SECRET_KEY` and the LDAP environment variables before starting `python app.py`.
+The web pod must be able to reach `172.18.31.10:389`. A failed service bind or search
+returns an LDAP configuration error; a wrong user password returns a login error.
+Live LDAP login must be verified in your network after provisioning the Secrets;
+unit tests use mocked LDAP connections.
+
+### Local LDAP run (PowerShell)
+
+```powershell
+.\scripts\start-local.ps1
+```
+
+The script uses `.venv-local` (or `.venv`), prompts privately for the service account
+bind password, generates a temporary session key and serves only
+`http://127.0.0.1:5000/login`. No Kubernetes Secrets or deployment are required.
+It sets the confirmed LDAP connection values and disables Secure cookies only
+for this local process. Sign in with your own `sAMAccountName` and password.
+Your machine must have network/VPN access to `172.18.31.10:389`. Cluster operations
+require an authenticated `oc` session. Use `-Port 5001` if port 5000 is busy.
+Stop with Ctrl+C; the script restores the previous environment values.
+
+If the login page reports a service-account bind failure, the failure occurs before
+searching for the entered user. The launcher requires the password belonging to
+`openshift@mbank.local`, not your personal login password. Ask the admin to verify
+that service account and its password. To replace an existing environment password,
+stop the local server and run `.\scripts\start-local.ps1 -PromptBindPassword`.
+LDAP result 49 means the server rejected the service credentials; it can also reflect
+account restrictions. Codes 8/13 indicate the server requires stronger/confidential
+transport. The app reports numeric results without exposing directory diagnostics.

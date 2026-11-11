@@ -28,14 +28,15 @@ spec:
               value: "ldap://172.18.31.10:389"
             - name: LDAP_BASE_DN
               value: "dc=mbank,dc=local"
+            # Confirmed LDAP login attribute: sAMAccountName.
             - name: LDAP_USERNAME_ATTRIBUTE
               value: "sAMAccountName"
             - name: LDAP_BIND_DN
-              value: "dn"
+              value: "openshift@mbank.local"
             - name: LDAP_BIND_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: my-ldap-bind-password
+                  name: finacle-support-ldap
                   key: bindPassword
             - name: LDAP_INSECURE
               value: "true"
